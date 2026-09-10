@@ -30,7 +30,8 @@
         &lt;a href="/Abel_Pintos/La_Llave.phtml"&gt;
             La Llave acordes
         &lt;/a&gt;
-    &lt;/li&gt;&lt;ul&gt;
+    &lt;/li&gt;
+    &lt;/ul&gt;
 </code></pre><p>El programa detectará automáticamente los enlaces y construirá las URL completas:</p><pre><code class="language-text">https://lacuerda.net/Abel_Pintos/La_Llave.phtml
 </code></pre><hr><h2>⚙️ Configuración del artista</h2><p>Actualmente el artista está definido directamente dentro del código:</p><pre><code class="language-python">nombre_artista = "Abel Pintos"
 </code></pre><p>Para utilizar otro artista, simplemente cambia ese valor:</p><pre><code class="language-python">nombre_artista = "Artista Nuevo"
