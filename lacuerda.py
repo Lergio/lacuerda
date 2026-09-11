@@ -1,5 +1,8 @@
 import os
+import re
+import sys
 import time
+import unicodedata
 import requests
 from bs4 import BeautifulSoup
 
@@ -7,89 +10,227 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# Mapeo de la letra de tipo (según el atributo lcd) a un nombre legible
+TIPOS = {
+    "R": "Acordes",
+    "T": "Tablatura",
+    "B": "Bajo",
+    "H": "Armonica",
+    "K": "Teclado",
+}
+
+# --- Configuración general (esto ya no cambia por artista) ---
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+ARCHIVO_HTML_LOCAL = "lista.html"
+DOMINIO_BASE = "https://acordes.lacuerda.net"
+
+
+def slugify_artista(nombre):
+    """Convierte 'Abel Pintos' -> 'abel_pintos', sacando tildes/ñ,
+    que es el formato que usa lacuerda.net en sus URLs."""
+    sin_tildes = unicodedata.normalize("NFKD", nombre)
+    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    slug = sin_tildes.lower().strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = slug.strip("_")
+    return slug
+
+
+def extraer_nombre_artista(html_contenido):
+    """Busca <script>bName='Andrés Calamaro'</script> (o similar) en el HTML
+    y devuelve el nombre del artista, o None si no lo encuentra."""
+    match = re.search(r"bName\s*=\s*['\"]([^'\"]+)['\"]", html_contenido)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def pedir_datos_artista(html_contenido):
+    """Obtiene el nombre del artista: primero intenta detectarlo automáticamente
+    desde el propio lista.html (bName=...); si no lo encuentra, usa el argumento
+    de consola o lo pregunta por input. Deriva el slug de URL a partir del nombre."""
+    nombre = extraer_nombre_artista(html_contenido)
+
+    if nombre:
+        print(f"🎤 Artista detectado automáticamente en el HTML: '{nombre}'")
+    elif len(sys.argv) > 1:
+        nombre = " ".join(sys.argv[1:]).strip()
+    else:
+        nombre = input(
+            "No se encontró 'bName' en lista.html. "
+            "¿Nombre del artista (tal como querés que se llame la carpeta)? "
+        ).strip()
+
+    if not nombre:
+        print("❌ No se pudo determinar el nombre del artista. Abortando.")
+        sys.exit(1)
+
+    slug_final = slugify_artista(nombre)
+    print(f"🌐 Slug de URL derivado: '{slug_final}'")
+
+    return nombre, slug_final
+
+
+def parsear_versiones(lcd, slug, ruta_artista_url):
+    """
+    A partir del atributo lcd (ej: 'RRTKT-12534') y el slug de la canción,
+    devuelve una lista de tuplas (tipo_legible, url, sufijo) para cada versión.
+
+    El lcd tiene el formato "<letras>-<numeros>", donde cada posición i
+    empareja letras[i] (tipo de transcripción) con numeros[i] (el sufijo
+    que se usa en la URL: 1 = sin sufijo, 2 = "-2", 3 = "-3", etc).
+    """
+    versiones = []
+    if not lcd or "-" not in lcd:
+        # Formato inesperado: como fallback, asumimos una sola versión (acordes)
+        return [("Acordes", f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml", 1)]
+
+    letras, numeros = lcd.split("-", 1)
+    if len(letras) != len(numeros):
+        # No matchea 1 a 1, usamos fallback simple
+        return [("Acordes", f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml", 1)]
+
+    for letra, num in zip(letras, numeros):
+        try:
+            sufijo = int(num)
+        except ValueError:
+            continue
+        tipo = TIPOS.get(letra, letra)  # si aparece una letra nueva, se usa tal cual
+        sufijo_url = "" if sufijo == 1 else f"-{sufijo}"
+        url = f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}{sufijo_url}.shtml"
+        versiones.append((tipo, url, sufijo))
+
+    # Ordenamos por sufijo para que el nombre de archivo sea consistente
+    versiones.sort(key=lambda v: v[2])
+    return versiones
+
+
+def nombre_seguro(texto):
+    limpio = "".join(c for c in texto if c.isalnum() or c in (" ", "_", "-")).strip()
+    return re.sub(r"\s+", " ", limpio)
+
+
 def procesar_biblioteca_completa():
-    carpeta_principal = "Biblioteca_LaCuerda"
-    nombre_artista = "Abel Pintos"
-    archivo_html_local = "lista.html"
-    
-    print("--- INICIANDO SCRIPT CON EXTRACCIÓN TOTAL DE CONTENIDO ---")
-    
-    if not os.path.exists(archivo_html_local):
-        print(f"❌ Error: No se encuentra el archivo '{archivo_html_local}' en esta carpeta.")
+    print("--- INICIANDO SCRIPT (con soporte multi-versión) ---")
+
+    if not os.path.exists(ARCHIVO_HTML_LOCAL):
+        print(f"❌ Error: No se encuentra el archivo '{ARCHIVO_HTML_LOCAL}' en esta carpeta.")
         return
 
-    ruta_carpeta = os.path.join(carpeta_principal, nombre_artista.replace(" ", "_"))
-    if not os.path.exists(ruta_carpeta):
-        os.makedirs(ruta_carpeta)
-        
-    with open(archivo_html_local, "r", encoding="utf-8") as f:
+    with open(ARCHIVO_HTML_LOCAL, "r", encoding="utf-8") as f:
         html_contenido = f.read()
-        
-    soup = BeautifulSoup(html_contenido, 'html.parser')
-    elementos_lista = soup.find_all('li')
-    
-    canciones_encontradas = []
-    for li in elementos_lista:
-        enlace = li.find('a')
-        if enlace:
-            href_slug = enlace.get('href', '').strip()
-            texto_enlace = enlace.text.strip()
-            
-            if href_slug:
-                dominio_base = "https://acordes.lacuerda.net"
-                ruta_artista = "abel_pintos"
-                url_limpia_web = f"{dominio_base}/{ruta_artista}/{href_slug}"
-                
-                titulo_final_txt = texto_enlace.replace("acordes", "").replace("tablatura", "").strip()
-                
-                if (titulo_final_txt, url_limpia_web) not in canciones_encontradas:
-                    canciones_encontradas.append((titulo_final_txt, url_limpia_web))
-                
-    print(f"¡Éxito! Se identificaron {len(canciones_encontradas)} canciones.")
-    
-    for i, (titulo, url_tab) in enumerate(canciones_encontradas, start=1):
-        nombre_seguro = "".join(c for c in titulo if c.isalnum() or c in (' ', '_', '-')).strip()
-        nombre_archivo = f"{nombre_seguro}.txt"
-        ruta_final_txt = os.path.join(ruta_carpeta, nombre_archivo)
-        
-        # Si ya existe, la saltamos
-        if os.path.exists(ruta_final_txt):
-            continue
-            
-        print(f"[{i}/{len(canciones_encontradas)}] Guardando: [{titulo}]")
-        print(f"     🔗 URL: {url_tab}")
-        time.sleep(2)
-        
-        try:
-            res_tab = requests.get(url_tab, headers=HEADERS, timeout=15)
-            if res_tab.status_code == 200:
-                soup_cancion = BeautifulSoup(res_tab.text, 'html.parser')
-                
-                # NUEVA ESTRATEGIA: Buscamos el contenedor principal de los acordes en LaCuerda
-                # Usualmente la letra está dentro de una etiqueta <pre> o de un div con contenido de texto principal.
-                cuerpo_cancion = soup_cancion.find('pre')
-                
-                if cuerpo_cancion:
-                    texto_tablatura = cuerpo_cancion.text
-                else:
-                    # Plan B: Si no hay etiqueta pre, buscamos bloques de texto alternativos o el body limpio
-                    posible_contenedor = soup_cancion.find('div', {'id': 'partituras'}) or soup_cancion.find('article')
-                    if posible_contenedor:
-                        texto_tablatura = posible_contenedor.text
-                    else:
-                        texto_tablatura = "No se pudo extraer el contenido automáticamente."
 
-                with open(ruta_final_txt, "w", encoding="utf-8") as archivo:
-                    archivo.write(f"ARTISTA: {nombre_artista}\n")
-                    archivo.write(f"CANCION: {titulo}\n")
-                    archivo.write("="*40 + "\n\n")
-                    archivo.write(texto_tablatura)
-                print(f"     ✅ ¡Descargada y guardada por completo!")
-                
+    nombre_artista, ruta_artista_url = pedir_datos_artista(html_contenido)
+
+    ruta_carpeta = os.path.join(CARPETA_PRINCIPAL, nombre_artista.replace(" ", "_"))
+    os.makedirs(ruta_carpeta, exist_ok=True)
+    print(f"📁 Carpeta de destino: {ruta_carpeta}")
+    print(f"🌐 URLs se armarán como: {DOMINIO_BASE}/{ruta_artista_url}/<cancion>.shtml")
+
+    soup = BeautifulSoup(html_contenido, "html.parser")
+    elementos_lista = soup.find_all("li")
+
+    # slug -> (titulo, lcd)  -> deduplicado, porque a veces el sitio
+    # repite el mismo href en dos <li> distintos con títulos ligeramente distintos
+    canciones = {}
+    for li in elementos_lista:
+        enlace = li.find("a")
+        if not enlace:
+            continue
+        slug = enlace.get("href", "").strip()
+        if not slug:
+            continue
+        # El texto del <a> incluye "acordes"/"tablatura" dentro de un <em>; lo quitamos
+        em = enlace.find("em")
+        texto_titulo = enlace.text.strip()
+        if em:
+            texto_titulo = texto_titulo.replace(em.text.strip(), "").strip()
+
+        lcd = li.get("lcd", "")
+
+        if slug not in canciones:
+            canciones[slug] = (texto_titulo, lcd)
+
+    print(f"¡Éxito! Se identificaron {len(canciones)} canciones únicas.")
+
+    total_versiones_descargadas = 0
+    total_versiones_omitidas = 0
+
+    for i, (slug, (titulo, lcd)) in enumerate(canciones.items(), start=1):
+        versiones = parsear_versiones(lcd, slug, ruta_artista_url)
+        base_nombre = nombre_seguro(titulo)
+
+        # Si hay más de una versión del mismo tipo (ej: dos "Acordes"),
+        # les agregamos un contador para no pisarse entre archivos
+        conteo_tipos = {}
+        for tipo, _, _ in versiones:
+            conteo_tipos[tipo] = conteo_tipos.get(tipo, 0) + 1
+
+        contador_actual = {}
+
+        print(f"[{i}/{len(canciones)}] {titulo}  ({len(versiones)} versión/es: {[t for t,_,_ in versiones]})")
+
+        for tipo, url_version, sufijo in versiones:
+            if conteo_tipos[tipo] > 1:
+                contador_actual[tipo] = contador_actual.get(tipo, 0) + 1
+                etiqueta = f"{tipo} {contador_actual[tipo]}"
             else:
-                print(f"     ⚠️ Servidor rechazó la canción (Código {res_tab.status_code})")
-        except Exception as e:
-            print(f"     ❌ Fallo de conexión: {e}")
+                etiqueta = tipo
+
+            nombre_archivo = f"{base_nombre} - {etiqueta}.txt"
+            ruta_final_txt = os.path.join(ruta_carpeta, nombre_archivo)
+
+            if os.path.exists(ruta_final_txt):
+                total_versiones_omitidas += 1
+                continue
+
+            print(f"      🔗 [{tipo}] {url_version}")
+            time.sleep(2)
+
+            try:
+                res_tab = requests.get(url_version, headers=HEADERS, timeout=15)
+                if res_tab.status_code == 200:
+                    soup_cancion = BeautifulSoup(res_tab.text, "html.parser")
+                    
+                    # 1. Buscamos el div principal. 
+                    # Pasamos una lista con "tbody" y "t_body" para cubrir cualquier variante en la web
+                    div_contenedor = soup_cancion.find("div", id=["tbody", "t_body"])
+                    
+                    # 2. Buscamos el <pre> dentro de ese div. 
+                    # Si la web no tuviera el div por alguna razón, hacemos un fallback buscando cualquier <pre>
+                    if div_contenedor:
+                        bloque_tablatura = div_contenedor.find("pre")
+                    else:
+                        bloque_tablatura = soup_cancion.find("pre")
+
+                    # 3. Verificamos que se haya encontrado y que contenga texto real
+                    if bloque_tablatura and bloque_tablatura.text.strip():
+                        
+                        # Al usar .text, BeautifulSoup descarta las etiquetas <div> y <a> internas,
+                        # pero mantiene intactos los espacios y la alineación de los acordes.
+                        texto_tablatura = bloque_tablatura.text
+                        
+                        with open(ruta_final_txt, "w", encoding="utf-8") as archivo:
+                            archivo.write(f"ARTISTA: {nombre_artista}\n")
+                            archivo.write(f"CANCION: {titulo}\n")
+                            archivo.write(f"VERSION: {etiqueta}\n")
+                            archivo.write(f"URL: {url_version}\n")
+                            archivo.write("=" * 40 + "\n\n")
+                            archivo.write(texto_tablatura)
+                            
+                        print(f"         ✅ ¡Descargada! -> {nombre_archivo}")
+                        total_versiones_descargadas += 1
+                    else:
+                        print(f"         ⚠️ No se encontró el texto de la canción en {url_version}")
+                else:
+                    print(f"         ⚠️ Servidor rechazó la versión (Código {res_tab.status_code}) -> {url_version}")
+            except Exception as e:
+                print(f"         ❌ Fallo de conexión: {e}")
+
+    print("\n--- RESUMEN ---")
+    print(f"Versiones descargadas: {total_versiones_descargadas}")
+    print(f"Versiones omitidas (ya existían): {total_versiones_omitidas}")
+
 
 if __name__ == "__main__":
     procesar_biblioteca_completa()
