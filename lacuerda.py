@@ -110,6 +110,49 @@ def nombre_seguro(texto):
     return re.sub(r"\s+", " ", limpio)
 
 
+def pedir_slug_manual(ruta_artista_url_actual):
+    """Le pide al usuario el tramo final de la URL del artista
+    (ej: 'bersuit' para https://acordes.lacuerda.net/bersuit/)."""
+    print(f"   URL probada: {DOMINIO_BASE}/{ruta_artista_url_actual}/ -> no existe (404)")
+    nuevo = input(
+        "   Ingresá manualmente el tramo de URL correcto del artista "
+        "(la parte entre lacuerda.net/ y la siguiente barra, ej: 'bersuit'): "
+    ).strip().strip("/")
+    return nuevo
+
+
+def resolver_ruta_artista(ruta_artista_url, slug_primera_cancion):
+    """Verifica que DOMINIO_BASE/ruta_artista_url/ exista probando la URL
+    de la primera canción de la lista. Si da 404, corta el recorrido,
+    pide por teclado el tramo correcto de la URL y reintenta hasta
+    encontrar una ruta válida (o hasta que el usuario cancele)."""
+    ruta_actual = ruta_artista_url
+
+    while True:
+        url_prueba = f"{DOMINIO_BASE}/{ruta_actual}/{slug_primera_cancion}.shtml"
+        print(f"🔎 Verificando ruta de artista con: {url_prueba}")
+        try:
+            resp = requests.get(url_prueba, headers=HEADERS, timeout=15)
+        except Exception as e:
+            print(f"   ❌ Fallo de conexión al verificar: {e}")
+            resp = None
+
+        if resp is not None and resp.status_code == 200:
+            print(f"   ✅ Ruta de artista válida: '{ruta_actual}'")
+            return ruta_actual
+
+        codigo = resp.status_code if resp is not None else "sin respuesta"
+        print(f"   ⚠️ La ruta '{ruta_actual}' no funcionó (código: {codigo}).")
+
+        nuevo = pedir_slug_manual(ruta_actual)
+        if not nuevo:
+            print("   ❌ No se ingresó ninguna ruta. Abortando.")
+            sys.exit(1)
+
+        ruta_actual = nuevo
+        print(f"   🔁 Reintentando el recorrido de {ARCHIVO_HTML_LOCAL} con la nueva ruta: '{ruta_actual}'")
+
+
 def procesar_biblioteca_completa():
     print("--- INICIANDO SCRIPT (con soporte multi-versión) ---")
 
@@ -153,8 +196,30 @@ def procesar_biblioteca_completa():
 
     print(f"¡Éxito! Se identificaron {len(canciones)} canciones únicas.")
 
+    if not canciones:
+        print("❌ No se encontraron canciones en el lista.html. Abortando.")
+        return
+
+    # --- Validamos que la ruta de artista derivada del nombre sea correcta ---
+    # antes de lanzar la descarga masiva. Probamos con el slug de la primera
+    # canción de la lista; si da 404, cortamos, pedimos el tramo de URL
+    # correcto por teclado y reintentamos.
+    primer_slug = next(iter(canciones))
+    ruta_artista_url = resolver_ruta_artista(ruta_artista_url, primer_slug)
+    print(f"🌐 URLs se armarán como: {DOMINIO_BASE}/{ruta_artista_url}/<cancion>.shtml")
+
+    descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista)
+
+
+def descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista):
+    """Recorre las canciones y descarga cada versión. Si detecta un 404 en el
+    primer intento real de descarga (posible indicio de que la ruta de
+    artista sigue siendo incorrecta pese a la validación previa), corta el
+    recorrido, pide el tramo de URL correcto por teclado y reinicia todo
+    el recorrido de lista.html con la ruta corregida."""
     total_versiones_descargadas = 0
     total_versiones_omitidas = 0
+    intentos_reales = 0
 
     for i, (slug, (titulo, lcd)) in enumerate(canciones.items(), start=1):
         versiones = parsear_versiones(lcd, slug, ruta_artista_url)
@@ -189,6 +254,21 @@ def procesar_biblioteca_completa():
 
             try:
                 res_tab = requests.get(url_version, headers=HEADERS, timeout=15)
+
+                if res_tab.status_code == 404 and intentos_reales == 0:
+                    # Primer intento real de descarga y da 404: cortamos el
+                    # recorrido, pedimos la ruta correcta y reiniciamos todo
+                    # el recorrido de lista.html desde cero con esa ruta.
+                    print("         ⚠️ 404 en el primer intento real. La ruta de artista sigue mal.")
+                    nueva_ruta = pedir_slug_manual(ruta_artista_url)
+                    if not nueva_ruta:
+                        print("         ❌ No se ingresó ninguna ruta. Abortando.")
+                        sys.exit(1)
+                    print(f"         🔁 Reiniciando el recorrido de {ARCHIVO_HTML_LOCAL} con la ruta '{nueva_ruta}'...")
+                    return descargar_canciones(canciones, nueva_ruta, ruta_carpeta, nombre_artista)
+
+                intentos_reales += 1
+
                 if res_tab.status_code == 200:
                     soup_cancion = BeautifulSoup(res_tab.text, "html.parser")
                     
