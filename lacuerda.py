@@ -27,13 +27,52 @@ DOMINIO_BASE = "https://acordes.lacuerda.net"
 
 def slugify_artista(nombre):
     """Convierte 'Abel Pintos' -> 'abel_pintos', sacando tildes/ñ,
-    que es el formato que usa lacuerda.net en sus URLs."""
-    sin_tildes = unicodedata.normalize("NFKD", nombre)
+    que es el formato que usa lacuerda.net en sus URLs.
+
+    Caso particular: lacuerda.net no reemplaza la 'ñ' por 'n' sino por 'ni'
+    (ej: 'Chaqueño' -> 'chaquenio', no 'chaqueno'). Por eso la reemplazamos
+    explícitamente ANTES de sacar el resto de las tildes con NFKD, porque
+    esa normalización la convertiría en una simple 'n'."""
+    con_ni = nombre.replace("ñ", "ni").replace("Ñ", "Ni")
+    sin_tildes = unicodedata.normalize("NFKD", con_ni)
     sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
     slug = sin_tildes.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "_", slug)
     slug = slug.strip("_")
     return slug
+
+
+# Artículos iniciales que lacuerda.net suele omitir al armar la URL
+# del artista (ej: "Los Pericos" -> lacuerda.net/pericos/, no /los_pericos/)
+ARTICULOS_INICIALES = ("el", "la", "los", "las")
+
+
+def quitar_articulo_inicial(nombre):
+    """Si el nombre del artista empieza con un artículo (El/La/Los/Las),
+    devuelve el nombre sin ese artículo. Si no aplica, devuelve None."""
+    partes = nombre.strip().split(" ", 1)
+    if len(partes) < 2:
+        return None
+    primera_palabra, resto = partes
+    if primera_palabra.lower() in ARTICULOS_INICIALES:
+        return resto.strip()
+    return None
+
+
+def generar_candidatos_slug(nombre):
+    """Genera la lista de slugs candidatos para el nombre del artista,
+    en orden de prioridad: primero el slug 'completo', y si el nombre
+    empieza con un artículo (El/La/Los/Las), también el slug sin ese
+    artículo, ya que lacuerda.net suele omitirlo en la URL."""
+    candidatos = [slugify_artista(nombre)]
+
+    nombre_sin_articulo = quitar_articulo_inicial(nombre)
+    if nombre_sin_articulo:
+        slug_sin_articulo = slugify_artista(nombre_sin_articulo)
+        if slug_sin_articulo not in candidatos:
+            candidatos.append(slug_sin_articulo)
+
+    return candidatos
 
 
 def extraer_nombre_artista(html_contenido):
@@ -65,10 +104,13 @@ def pedir_datos_artista(html_contenido):
         print("❌ No se pudo determinar el nombre del artista. Abortando.")
         sys.exit(1)
 
-    slug_final = slugify_artista(nombre)
-    print(f"🌐 Slug de URL derivado: '{slug_final}'")
+    candidatos_slug = generar_candidatos_slug(nombre)
+    if len(candidatos_slug) > 1:
+        print(f"🌐 Slugs de URL candidatos (se probarán en orden): {candidatos_slug}")
+    else:
+        print(f"🌐 Slug de URL derivado: '{candidatos_slug[0]}'")
 
-    return nombre, slug_final
+    return nombre, candidatos_slug
 
 
 def parsear_versiones(lcd, slug, ruta_artista_url):
@@ -121,33 +163,48 @@ def pedir_slug_manual(ruta_artista_url_actual):
     return nuevo
 
 
-def resolver_ruta_artista(ruta_artista_url, slug_primera_cancion):
-    """Verifica que DOMINIO_BASE/ruta_artista_url/ exista probando la URL
-    de la primera canción de la lista. Si da 404, corta el recorrido,
-    pide por teclado el tramo correcto de la URL y reintenta hasta
-    encontrar una ruta válida (o hasta que el usuario cancele)."""
-    ruta_actual = ruta_artista_url
+def probar_ruta_artista(ruta_candidata, slug_primera_cancion):
+    """Prueba una única ruta de artista contra la primera canción de la
+    lista. Devuelve True si responde 200, False en cualquier otro caso
+    (404, otro código, o fallo de conexión)."""
+    url_prueba = f"{DOMINIO_BASE}/{ruta_candidata}/{slug_primera_cancion}.shtml"
+    print(f"🔎 Verificando ruta de artista con: {url_prueba}")
+    try:
+        resp = requests.get(url_prueba, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f"   ❌ Fallo de conexión al verificar: {e}")
+        return False
 
+    if resp.status_code == 200:
+        print(f"   ✅ Ruta de artista válida: '{ruta_candidata}'")
+        return True
+
+    print(f"   ⚠️ La ruta '{ruta_candidata}' no funcionó (código: {resp.status_code}).")
+    return False
+
+
+def resolver_ruta_artista(candidatos_slug, slug_primera_cancion):
+    """Recibe la lista de rutas candidatas para el artista (ej: el slug
+    completo y, si aplica, el slug sin el artículo inicial El/La/Los/Las)
+    y las prueba en orden contra la primera canción de la lista.
+
+    Si ninguna funciona, corta el recorrido, pide por teclado el tramo
+    correcto de la URL y reintenta hasta encontrar una ruta válida (o
+    hasta que el usuario cancele)."""
+    for candidato in candidatos_slug:
+        if probar_ruta_artista(candidato, slug_primera_cancion):
+            return candidato
+
+    # Ninguno de los candidatos automáticos funcionó: pedimos manualmente
+    ruta_actual = candidatos_slug[-1]
     while True:
-        url_prueba = f"{DOMINIO_BASE}/{ruta_actual}/{slug_primera_cancion}.shtml"
-        print(f"🔎 Verificando ruta de artista con: {url_prueba}")
-        try:
-            resp = requests.get(url_prueba, headers=HEADERS, timeout=15)
-        except Exception as e:
-            print(f"   ❌ Fallo de conexión al verificar: {e}")
-            resp = None
-
-        if resp is not None and resp.status_code == 200:
-            print(f"   ✅ Ruta de artista válida: '{ruta_actual}'")
-            return ruta_actual
-
-        codigo = resp.status_code if resp is not None else "sin respuesta"
-        print(f"   ⚠️ La ruta '{ruta_actual}' no funcionó (código: {codigo}).")
-
         nuevo = pedir_slug_manual(ruta_actual)
         if not nuevo:
             print("   ❌ No se ingresó ninguna ruta. Abortando.")
             sys.exit(1)
+
+        if probar_ruta_artista(nuevo, slug_primera_cancion):
+            return nuevo
 
         ruta_actual = nuevo
         print(f"   🔁 Reintentando el recorrido de {ARCHIVO_HTML_LOCAL} con la nueva ruta: '{ruta_actual}'")
@@ -163,12 +220,11 @@ def procesar_biblioteca_completa():
     with open(ARCHIVO_HTML_LOCAL, "r", encoding="utf-8") as f:
         html_contenido = f.read()
 
-    nombre_artista, ruta_artista_url = pedir_datos_artista(html_contenido)
+    nombre_artista, candidatos_slug = pedir_datos_artista(html_contenido)
 
     ruta_carpeta = os.path.join(CARPETA_PRINCIPAL, nombre_artista.replace(" ", "_"))
     os.makedirs(ruta_carpeta, exist_ok=True)
     print(f"📁 Carpeta de destino: {ruta_carpeta}")
-    print(f"🌐 URLs se armarán como: {DOMINIO_BASE}/{ruta_artista_url}/<cancion>.shtml")
 
     soup = BeautifulSoup(html_contenido, "html.parser")
     elementos_lista = soup.find_all("li")
@@ -200,12 +256,13 @@ def procesar_biblioteca_completa():
         print("❌ No se encontraron canciones en el lista.html. Abortando.")
         return
 
-    # --- Validamos que la ruta de artista derivada del nombre sea correcta ---
-    # antes de lanzar la descarga masiva. Probamos con el slug de la primera
-    # canción de la lista; si da 404, cortamos, pedimos el tramo de URL
-    # correcto por teclado y reintentamos.
+    # --- Validamos que la ruta de artista sea correcta antes de lanzar la ---
+    # descarga masiva. Probamos en orden los slugs candidatos (el completo y,
+    # si aplica, el slug sin el artículo inicial El/La/Los/Las) contra la
+    # primera canción de la lista; si ninguno funciona, pedimos el tramo de
+    # URL correcto por teclado.
     primer_slug = next(iter(canciones))
-    ruta_artista_url = resolver_ruta_artista(ruta_artista_url, primer_slug)
+    ruta_artista_url = resolver_ruta_artista(candidatos_slug, primer_slug)
     print(f"🌐 URLs se armarán como: {DOMINIO_BASE}/{ruta_artista_url}/<cancion>.shtml")
 
     descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista)
