@@ -1,159 +1,559 @@
-<html>
-<body>
-<!--StartFragment--><html><head></head><body><h1>🎸 Biblioteca LaCuerda — Descargador de Tablaturas</h1><p>Script en Python para crear automáticamente una biblioteca local de canciones de un artista a partir de un archivo HTML con enlaces de <strong>LaCuerda.net</strong>.</p><p>El programa analiza un archivo <code inline="">lista.html</code>, identifica las canciones disponibles, visita cada enlace y guarda el contenido de las tablaturas/acordes en archivos <code inline="">.txt</code> organizados por artista.</p><blockquote><p><strong>Nota:</strong> Este proyecto está pensado para uso personal. Respeta los términos de uso, derechos de autor y condiciones del sitio web del que obtengas el contenido.</p></blockquote><hr><h2>📋 ¿Qué hace?</h2><p>El script realiza automáticamente las siguientes tareas:</p><ol><li><p>Busca el archivo <code inline="">lista.html</code> en la carpeta del proyecto.</p></li><li><p>Analiza todos los elementos <code inline="">&lt;li&gt;</code> que contienen enlaces.</p></li><li><p>Obtiene:</p><ul><li><p>El título de la canción.</p></li><li><p>La URL correspondiente en <code inline="">lacuerda.net</code>.</p></li></ul></li><li><p>Elimina de los títulos las palabras <code inline="">acordes</code> y <code inline="">tablatura</code>.</p></li><li><p>Evita procesar canciones duplicadas.</p></li><li><p>Crea automáticamente la carpeta del artista.</p></li><li><p>Visita cada página de canción.</p></li><li><p>Extrae el contenido de la tablatura.</p></li><li><p>Guarda cada canción como un archivo <code inline="">.txt</code>.</p></li><li><p>Salta automáticamente las canciones que ya fueron descargadas.</p></li><li><p>Muestra en consola el progreso de todo el proceso.</p></li></ol><hr><h2>📁 Estructura del proyecto</h2><p>La estructura mínima necesaria es:</p><pre><code class="language-text">Proyecto/
-│
-├── procesador.py
-├── lista.html
-└── Biblioteca_LaCuerda/
-</code></pre><p>La carpeta <code inline="">Biblioteca_LaCuerda</code> se crea automáticamente si no existe.</p><p>Después de ejecutar el programa, la estructura será similar a:</p><pre><code class="language-text">Proyecto/
-│
-├── procesador.py
-├── lista.html
-│
-└── Biblioteca_LaCuerda/
-    └── Abel_Pintos/
-        ├── Aventura.txt
-        ├── Cada_Noche.txt
-        ├── De_Mi_Algo.txt
-        ├── La_Llave.txt
-        └── ...
-</code></pre><p>El nombre del artista se utiliza para crear automáticamente la carpeta correspondiente, reemplazando los espacios por <code inline="">_</code>.</p><hr><h2>🛠️ Requisitos</h2><p>Se necesita:</p><ul><li><p><strong>Python 3.8 o superior</strong></p></li><li><p><code inline="">requests</code></p></li><li><p><code inline="">beautifulsoup4</code></p></li></ul><p>Las librerías pueden instalarse mediante:</p><pre><code class="language-bash">pip install requests beautifulsoup4
-</code></pre><p>O, si utilizas <code inline="">pip3</code>:</p><pre><code class="language-bash">pip3 install requests beautifulsoup4
-</code></pre><hr><h2>🚀 Instalación</h2><h3>1. Clonar o descargar el proyecto</h3><p>Coloca el script y el archivo <code inline="">lista.html</code> dentro de la misma carpeta.</p><p>Por ejemplo:</p><pre><code class="language-text">MiBiblioteca/
-├── procesador.py
-└── lista.html
-</code></pre><h3>2. Instalar las dependencias</h3><p>Desde una terminal:</p><pre><code class="language-bash">pip install requests beautifulsoup4
-</code></pre><h3>3. Ejecutar el script</h3><pre><code class="language-bash">python procesador.py
-</code></pre><hr><h2>📄 El archivo <code inline="">lista.html</code></h2><p>El programa espera encontrar un archivo llamado exactamente:</p><pre><code class="language-text">lista.html
-</code></pre><p>El archivo debe contener enlaces a las canciones que se desean procesar.</p><p>Por ejemplo:</p><pre><code class="language-html">&lt;ul&gt;
-    &lt;li&gt;
-        &lt;a href="/Abel_Pintos/La_Llave.phtml"&gt;
-            La Llave acordes
-        &lt;/a&gt;
-    &lt;/li&gt;
-&lt;/ul&gt;
+# 🎸 Biblioteca LaCuerda
 
-</code></pre><p>El programa detectará automáticamente los enlaces y construirá las URL completas:</p><pre><code class="language-text">https://lacuerda.net/Abel_Pintos/La_Llave.phtml
-</code></pre><hr><h2>⚙️ Configuración del artista</h2><p>Actualmente el artista está definido directamente dentro del código:</p><pre><code class="language-python">nombre_artista = "Abel Pintos"
-</code></pre><p>Para utilizar otro artista, simplemente cambia ese valor:</p><pre><code class="language-python">nombre_artista = "Artista Nuevo"
-</code></pre><p>Los archivos se guardarán automáticamente en:</p><pre><code class="language-text">Biblioteca_LaCuerda/Artista_Nuevo/
-</code></pre><p>Por ejemplo:</p><pre><code class="language-python">nombre_artista = "Attaque 77"
-</code></pre><p>generará:</p><pre><code class="language-text">Biblioteca_LaCuerda/
-└── Attaque_77/
-</code></pre><hr><h2>🔄 Funcionamiento</h2><p>El flujo general del programa es:</p><pre><code class="language-text">                lista.html
-                    │
-                    ▼
-          ┌────────────────────┐
-          │ Analizar HTML      │
-          └─────────┬──────────┘
-                    │
-                    ▼
-          Buscar enlaces &lt;a&gt;
-                    │
-                    ▼
-        Obtener título + URL
-                    │
-                    ▼
-          Eliminar duplicados
-                    │
-                    ▼
-       ¿El archivo ya existe?
-              /           \
-            Sí             No
-            │              │
-            ▼              ▼
-          Saltar       Esperar 2 s
-                           │
-                           ▼
-                    Descargar página
-                           │
-                           ▼
-                  Extraer tablatura
-                           │
-                           ▼
-                     Guardar .txt
-                           │
-                           ▼
-                    Siguiente canción
-</code></pre><hr><h2>💾 Formato de los archivos generados</h2><p>Cada canción se guarda como un archivo de texto UTF-8.</p><p>Por ejemplo:</p><pre><code class="language-text">ARTISTA: Abel Pintos
+Script en Python para automatizar la creación de una biblioteca local de **acordes, tablaturas, bajo, armónica y teclado** a partir de listas de canciones de [LaCuerda.net](https://lacuerda.net/).
+
+El programa analiza un archivo `lista.html`, identifica automáticamente el artista y las canciones disponibles, detecta las diferentes versiones de cada tema y descarga cada transcripción como un archivo `.txt` organizado por artista.
+
+---
+
+## 📋 Características
+
+* 🎤 **Detección automática del artista** desde `lista.html`.
+* ⌨️ Posibilidad de indicar el artista manualmente mediante argumentos de consola o `input`.
+* 🔤 Generación automática del **slug utilizado por LaCuerda** para las URLs.
+* 🌎 Manejo de tildes y caracteres especiales.
+* 🅰️ Tratamiento especial para artistas cuyo nombre comienza con `El`, `La`, `Los` o `Las`.
+* 🔎 Verificación automática de la ruta del artista antes de iniciar la descarga.
+* ✏️ Posibilidad de introducir manualmente la ruta correcta si no puede determinarse automáticamente.
+* 🎵 Detección de canciones a partir de los enlaces presentes en `lista.html`.
+* 🧹 Eliminación de canciones duplicadas.
+* 🎼 Detección de múltiples versiones de una misma canción.
+* 🎸 Identificación de diferentes tipos de transcripción:
+
+  * Acordes
+  * Tablatura
+  * Bajo
+  * Armónica
+  * Teclado
+* 📄 Generación de un archivo `.txt` independiente para cada versión.
+* 🔄 Evita volver a descargar archivos que ya existen.
+* 🌐 Manejo de errores HTTP y fallos de conexión.
+* 🔁 Permite corregir manualmente la ruta del artista y reiniciar el proceso si se detecta un `404`.
+* 📊 Muestra un resumen final de las versiones descargadas y omitidas.
+
+---
+
+## 🛠️ Requisitos
+
+Se necesita:
+
+* **Python 3.8 o superior**
+* `requests`
+* `beautifulsoup4`
+
+Las librerías externas pueden instalarse con:
+
+```bash
+pip install requests beautifulsoup4
+```
+
+---
+
+## 📁 Estructura del proyecto
+
+La estructura mínima necesaria es:
+
+```text
+scraps_lacuerda/
+│
+├── lacuerda.py
+└── lista.html
+```
+
+La carpeta de la biblioteca se crea automáticamente.
+
+Después de ejecutar el programa:
+
+```text
+scraps_lacuerda/
+│
+├── lacuerda.py
+├── lista.html
+│
+└── Biblioteca_LaCuerda/
+    │
+    └── Nombre_Artista/
+        ├── Cancion 1 - Acordes.txt
+        ├── Cancion 1 - Tablatura.txt
+        ├── Cancion 2 - Acordes.txt
+        └── ...
+```
+
+---
+
+## 🚀 Uso
+
+### 1. Preparar `lista.html`
+
+El programa necesita un archivo llamado:
+
+```text
+lista.html
+```
+
+Este archivo debe contener la lista de canciones obtenida de LaCuerda.
+
+El programa analiza los elementos `<li>` y busca los enlaces `<a>` correspondientes a las canciones.
+
+Además, puede obtener automáticamente el nombre del artista cuando el HTML contiene información como:
+
+```html
+<script>
+    bName = 'Abel Pintos'
+</script>
+```
+
+---
+
+### 2. Ejecutar normalmente
+
+Desde la carpeta del proyecto:
+
+```bash
+python lacuerda.py
+```
+
+Si `lista.html` contiene el nombre del artista, el programa intentará detectarlo automáticamente.
+
+---
+
+### 3. Indicar el artista manualmente
+
+También es posible pasar el nombre del artista como argumento:
+
+```bash
+python lacuerda.py "Abel Pintos"
+```
+
+Esto resulta útil cuando `lista.html` no contiene la información `bName`.
+
+---
+
+## 🎤 Detección del artista
+
+El programa utiliza tres métodos para determinar el artista, en este orden:
+
+1. Busca automáticamente `bName` dentro de `lista.html`.
+2. Si no lo encuentra, utiliza los argumentos proporcionados al ejecutar el programa.
+3. Si tampoco existen argumentos, solicita el nombre mediante `input`.
+
+Una vez obtenido el nombre, genera automáticamente los posibles slugs utilizados por LaCuerda.
+
+Por ejemplo:
+
+```text
+Abel Pintos
+```
+
+se convierte en:
+
+```text
+abel_pintos
+```
+
+El programa también contempla casos especiales con `ñ`, tildes y artículos iniciales. Por ejemplo, tiene en cuenta que determinados nombres pueden utilizar una representación diferente en las URLs del sitio.
+
+---
+
+## 🌐 Verificación de la URL del artista
+
+Antes de iniciar la descarga masiva, el programa prueba la ruta del artista utilizando la primera canción encontrada.
+
+Por ejemplo:
+
+```text
+https://acordes.lacuerda.net/abel_pintos/cancion.shtml
+```
+
+Si responde correctamente, esa ruta se utiliza para el resto de las canciones.
+
+Si el nombre contiene un artículo inicial, como:
+
+```text
+Los Pericos
+```
+
+también puede probar automáticamente:
+
+```text
+los_pericos
+```
+
+y:
+
+```text
+pericos
+```
+
+Si ninguna de las rutas funciona, el programa solicita manualmente el tramo correcto de la URL.
+
+---
+
+## 🎵 Procesamiento de canciones
+
+Las canciones se obtienen recorriendo los elementos `<li>` de `lista.html`.
+
+El programa extrae:
+
+* El `href` de la canción.
+* El título.
+* El atributo `lcd`, utilizado por LaCuerda para identificar las diferentes versiones.
+
+Las canciones se almacenan internamente utilizando su `slug`, evitando procesar dos veces el mismo enlace aunque aparezca repetido dentro del HTML.
+
+---
+
+## 🎼 Múltiples versiones
+
+Una de las principales funcionalidades del proyecto es el procesamiento de múltiples versiones de una misma canción.
+
+El atributo `lcd` puede contener información como:
+
+```text
+RRTKT-12534
+```
+
+Las letras representan diferentes tipos de transcripción y los números indican qué versión corresponde a cada una.
+
+El programa interpreta esa información y genera las URLs correspondientes.
+
+Los tipos actualmente reconocidos son:
+
+| Código | Tipo      |
+| ------ | --------- |
+| `R`    | Acordes   |
+| `T`    | Tablatura |
+| `B`    | Bajo      |
+| `H`    | Armónica  |
+| `K`    | Teclado   |
+
+Si una canción posee varias versiones del mismo tipo, se utiliza un contador para evitar sobrescribir archivos.
+
+Por ejemplo:
+
+```text
+Cancion - Acordes.txt
+Cancion - Acordes 2.txt
+Cancion - Tablatura.txt
+```
+
+---
+
+## 📄 Archivos generados
+
+Cada versión se guarda en un archivo independiente.
+
+Por ejemplo:
+
+```text
+Biblioteca_LaCuerda/
+└── Abel_Pintos/
+    ├── La_Llave - Acordes.txt
+    ├── La_Llave - Tablatura.txt
+    └── La_Llave - Bajo.txt
+```
+
+Cada archivo contiene información de identificación antes del contenido de la transcripción:
+
+```text
+ARTISTA: Abel Pintos
 CANCION: La Llave
+VERSION: Acordes
+URL: https://acordes.lacuerda.net/abel_pintos/la_llave.shtml
 ========================================
 
-[contenido de la tablatura]
-</code></pre><p>Esto permite que los archivos sean fáciles de leer, editar, buscar o utilizar posteriormente para construir una biblioteca musical más grande.</p><hr><h2>🛡️ Prevención de descargas duplicadas</h2><p>Antes de descargar una canción, el programa comprueba si el archivo ya existe:</p><pre><code class="language-python">if os.path.exists(ruta_final_txt):
-    ...
-</code></pre><p>Si ya existe, la canción se salta automáticamente.</p><p>Esto permite ejecutar el programa nuevamente sin tener que descargar toda la biblioteca desde cero.</p><p>Por ejemplo:</p><pre><code class="language-text">[1/120] Saltando (Ya existe): La Llave
-[2/120] Saltando (Ya existe): Aventura
-[3/120] Guardando: [Sin Principio Ni Final]
-</code></pre><hr><h2>🌐 Extracción del contenido</h2><p>El programa utiliza <code inline="">BeautifulSoup</code> para analizar el HTML de cada canción.</p><p>Primero intenta encontrar un bloque:</p><pre><code class="language-html">&lt;pre&gt;
-</code></pre><p>mediante:</p><pre><code class="language-python">bloque_tablatura = soup_cancion.find('pre')
-</code></pre><p>Si no encuentra dicho bloque, utiliza métodos alternativos:</p><pre><code class="language-python">soup_cancion.find(id="t_body")
-</code></pre><p>o:</p><pre><code class="language-python">soup_cancion.find(class_="tablatura")
-</code></pre><p>y finalmente utiliza el <code inline="">&lt;body&gt;</code> de la página como último recurso.</p><p>Esto permite que el programa sea más tolerante frente a pequeñas diferencias en la estructura HTML de las páginas.</p><hr><h2>⏱️ Espera entre solicitudes</h2><p>Antes de acceder a cada canción se realiza una pausa:</p><pre><code class="language-python">time.sleep(2)
-</code></pre><p>Esto significa que el programa espera <strong>2 segundos entre solicitudes</strong>.</p><p>La espera reduce la velocidad de las peticiones y evita realizar cientos de solicitudes consecutivas de manera demasiado agresiva.</p><hr><h2>🔤 Nombres de archivo</h2><p>Los nombres de las canciones se limpian antes de crear el archivo:</p><pre><code class="language-python">nombre_seguro = "".join(
-    c for c in titulo
-    if c.isalnum() or c in (' ', '_', '-')
-).strip()
-</code></pre><p>Esto elimina caracteres que podrían causar problemas en los nombres de archivo.</p><p>Por ejemplo:</p><pre><code class="language-text">¿Y cómo es él?
-</code></pre><p>podría convertirse en un nombre compatible con el sistema de archivos.</p><hr><h2>📊 Mensajes durante la ejecución</h2><p>El programa informa en la terminal qué está haciendo.</p><p>Ejemplo:</p><pre><code class="language-text">--- Iniciando Procesador Masivo Blindado para: Abel Pintos ---
+[Contenido de la canción]
+```
 
-¡Éxito! El analizador identificó 120 canciones listas en tu archivo.
-Iniciando la descarga automática a tu disco duro...
+Esto permite conocer posteriormente de dónde provino cada archivo y qué tipo de versión contiene.
 
-[1/120] Guardando: [La Llave]
-      🔗 URL de descarga: https://lacuerda.net/...
-     ✅ ¡Descargada con éxito!
+---
 
-[2/120] Saltando (Ya existe): Aventura
+## 🔎 Extracción del contenido
 
-[3/120] Guardando: [Sin Principio Ni Final]
-      🔗 URL de descarga: https://lacuerda.net/...
-     ⚠️ No se pudo extraer texto limpio de la página.
+Para obtener el contenido de las canciones, el programa busca primero el contenedor principal de LaCuerda:
 
---- ¡Biblioteca completa de Abel Pintos creada perfectamente! ---
-</code></pre><hr><h2>⚠️ Manejo de errores</h2><p>El programa contempla diferentes situaciones:</p><h3>No existe <code inline="">lista.html</code></h3><pre><code class="language-text">❌ Error: No se encuentra el archivo 'lista.html'.
-</code></pre><h3>El servidor responde con un error</h3><pre><code class="language-text">⚠️ El servidor rechazó la canción (Código 403)
-</code></pre><h3>No se encuentra contenido extraíble</h3><pre><code class="language-text">⚠️ No se pudo extraer texto limpio de la página.
-</code></pre><h3>Error de conexión</h3><pre><code class="language-text">❌ Fallo de conexión en La Llave: ...
-</code></pre><p>Un error en una canción no detiene necesariamente todo el proceso: el programa continúa con las siguientes canciones.</p><hr><h2>🔧 Dependencias</h2>
-Librería | Función
--- | --
-os | Manejo de carpetas y archivos
-time | Pausas entre solicitudes
-requests | Descarga de páginas web
-BeautifulSoup | Análisis y extracción del HTML
+```html
+<div id="tbody">
+```
 
-<p><code inline="">os</code> y <code inline="">time</code> forman parte de la biblioteca estándar de Python.</p><p>Las dependencias externas son:</p><pre><code class="language-text">requests
+o:
+
+```html
+<div id="t_body">
+```
+
+Dentro de ese contenedor busca una etiqueta:
+
+```html
+<pre>
+```
+
+Si no encuentra el contenedor principal, utiliza un `<pre>` directamente como alternativa.
+
+Esto permite conservar los espacios y la alineación del contenido, algo especialmente importante para las tablaturas y los acordes.
+
+---
+
+## 🔄 Archivos existentes
+
+El programa comprueba si el archivo correspondiente a una versión ya existe:
+
+```python
+if os.path.exists(ruta_final_txt):
+```
+
+Cuando encuentra un archivo existente, lo omite y continúa con la siguiente versión.
+
+Esto permite ejecutar nuevamente el programa sin tener que descargar toda la biblioteca desde cero.
+
+Ejemplo:
+
+```text
+[1/100] Cancion 1
+[2/100] Cancion 2
+[3/100] Cancion 3
+```
+
+Las versiones que ya existen no se vuelven a descargar.
+
+---
+
+## ⚠️ Manejo de errores
+
+El programa contempla diferentes situaciones.
+
+### `lista.html` inexistente
+
+```text
+❌ Error: No se encuentra el archivo 'lista.html'
+```
+
+### Ruta del artista incorrecta
+
+El programa prueba automáticamente diferentes posibilidades.
+
+Si ninguna funciona, solicita al usuario la ruta correcta.
+
+### Error `404`
+
+Si durante la primera descarga real aparece un `404`, el programa puede solicitar una nueva ruta de artista y reiniciar el recorrido.
+
+### Fallos de conexión
+
+Los errores de conexión se muestran en consola y el programa continúa procesando las siguientes versiones.
+
+### Contenido no encontrado
+
+Si una página responde correctamente pero no contiene el contenido esperado, se muestra una advertencia:
+
+```text
+⚠️ No se encontró el texto de la canción
+```
+
+---
+
+## ⏱️ Pausa entre solicitudes
+
+El programa utiliza una pausa de:
+
+```python
+time.sleep(2)
+```
+
+entre las solicitudes de descarga.
+
+Esto reduce la frecuencia de peticiones realizadas al sitio y evita ejecutar una descarga masiva de manera demasiado agresiva.
+
+---
+
+## 📊 Resumen final
+
+Al finalizar el proceso se muestra un resumen:
+
+```text
+--- RESUMEN ---
+Versiones descargadas: 150
+Versiones omitidas (ya existían): 35
+```
+
+Esto permite conocer rápidamente cuánto contenido nuevo se agregó a la biblioteca.
+
+---
+
+## 🧩 Dependencias
+
+El proyecto utiliza las siguientes librerías:
+
+| Librería        | Uso                                                 |
+| --------------- | --------------------------------------------------- |
+| `os`            | Manejo de archivos y directorios                    |
+| `re`            | Expresiones regulares y procesamiento de texto      |
+| `sys`           | Argumentos de línea de comandos                     |
+| `time`          | Pausas entre solicitudes                            |
+| `unicodedata`   | Normalización de caracteres y eliminación de tildes |
+| `requests`      | Solicitudes HTTP                                    |
+| `BeautifulSoup` | Análisis y extracción del HTML                      |
+
+Las librerías `os`, `re`, `sys`, `time` y `unicodedata` forman parte de la biblioteca estándar de Python.
+
+Las dependencias externas son:
+
+```text
+requests
 beautifulsoup4
-</code></pre><hr><h2>📝 Personalización</h2><p>Las principales variables que pueden modificarse están al comienzo de la función:</p><pre><code class="language-python">carpeta_principal = "Biblioteca_LaCuerda"
-nombre_artista = "Abel Pintos"
-archivo_html_local = "lista.html"
-</code></pre><p>Por ejemplo:</p><pre><code class="language-python">carpeta_principal = "Mi_Cancionero"
-nombre_artista = "Attaque 77"
-archivo_html_local = "lista.html"
-</code></pre><p>El resultado será:</p><pre><code class="language-text">Mi_Cancionero/
-└── Attaque_77/
-    ├── Cancion_1.txt
-    ├── Cancion_2.txt
-    └── Cancion_3.txt
-</code></pre><hr><h2>🔒 Uso responsable</h2><p>Este script automatiza solicitudes a un sitio web externo. Se recomienda:</p><ul><li><p>Mantener pausas entre solicitudes.</p></li><li><p>No utilizar el programa para generar tráfico excesivo.</p></li><li><p>Respetar <code inline="">robots.txt</code>, términos de servicio y restricciones del sitio.</p></li><li><p>Utilizar los archivos descargados únicamente de acuerdo con los derechos y permisos correspondientes.</p></li><li><p>No redistribuir contenido protegido por derechos de autor sin autorización.</p></li></ul><hr><h2>📜 Licencia</h2><p>Este código puede adaptarse y modificarse para uso personal.</p><p>El contenido obtenido mediante el script puede estar sujeto a derechos de autor y/o a las condiciones de uso del sitio de origen. El código y el contenido descargado deben considerarse por separado.</p><hr><h2>🎵 Próximas mejoras posibles</h2><p>Algunas mejoras que podrían incorporarse en futuras versiones:</p><ul class="contains-task-list"><li class="task-list-item"><p><input type="checkbox" disabled=""> Permitir seleccionar el artista desde la terminal.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Procesar varios artistas automáticamente.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Crear un archivo índice con todas las canciones.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Detectar automáticamente canciones que fallaron.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Reintentar descargas fallidas.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Registrar errores en un archivo <code inline="">.log</code>.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Descargar solamente nuevas canciones al actualizar <code inline="">lista.html</code>.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Ordenar alfabéticamente los archivos.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Generar una biblioteca completa de múltiples artistas.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Exportar las canciones también a Markdown o HTML.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Añadir una interfaz gráfica.</p></li><li class="task-list-item"><p><input type="checkbox" disabled=""> Incorporar un modo de simulación que muestre qué canciones se descargarían sin realizar solicitudes.</p></li></ul><hr><h2>🎸 Ejemplo de resultado final</h2><p>Una biblioteca completa podría quedar organizada de esta manera:</p><pre><code class="language-text">Biblioteca_LaCuerda/
+```
+
+---
+
+## 🔧 Configuración
+
+La configuración general se encuentra al comienzo de `lacuerda.py`:
+
+```python
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+ARCHIVO_HTML_LOCAL = "lista.html"
+DOMINIO_BASE = "https://acordes.lacuerda.net"
+```
+
+### Carpeta principal
+
+```python
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+```
+
+Define dónde se almacenará la biblioteca descargada.
+
+### Archivo HTML
+
+```python
+ARCHIVO_HTML_LOCAL = "lista.html"
+```
+
+Define el archivo que contiene la lista de canciones.
+
+### Dominio
+
+```python
+DOMINIO_BASE = "https://acordes.lacuerda.net"
+```
+
+Define el dominio utilizado para construir las URLs de las canciones.
+
+---
+
+## 📂 Organización de la biblioteca
+
+El objetivo es mantener una estructura organizada por artista:
+
+```text
+Biblioteca_LaCuerda/
 │
 ├── Abel_Pintos/
-│   ├── Aventura.txt
-│   ├── Cada_Noche.txt
-│   ├── De_Mi_Algo.txt
-│   ├── El_Adivino.txt
-│   ├── La_Llave.txt
-│   └── Sin_Principio_Ni_Final.txt
-│
-├── Attaque_77/
-│   ├── Arrancacorazones.txt
-│   ├── Hacelo_Por_Mi.txt
+│   ├── Aventura - Acordes.txt
+│   ├── Aventura - Tablatura.txt
 │   └── ...
 │
-└── Almafuerte/
-    ├── A_Vos_Amigo.txt
+├── Attaque_77/
+│   ├── Arrancacorazones - Acordes.txt
+│   └── ...
+│
+└── Los_Pericos/
+    ├── Sin_Cadenas - Acordes.txt
     └── ...
-</code></pre><p>De esta manera, el script funciona como una herramienta sencilla para transformar listas de enlaces de canciones en una <strong>biblioteca local organizada por artista</strong>.</p></body></html><!--EndFragment-->
-</body>
-</html>
+```
+
+De esta manera, una única biblioteca puede contener material de múltiples artistas.
+
+---
+
+## 🔒 Uso responsable
+
+Este proyecto automatiza solicitudes hacia un sitio web externo.
+
+Se recomienda:
+
+* Respetar los términos de uso del sitio.
+* Respetar `robots.txt` y cualquier restricción aplicable.
+* Mantener una frecuencia razonable de solicitudes.
+* Utilizar las pausas incorporadas por el programa.
+* Utilizar el contenido descargado de acuerdo con los derechos de autor correspondientes.
+* No redistribuir contenido protegido sin la autorización necesaria.
+
+El proyecto automatiza el procesamiento y organización de contenido; los derechos sobre dicho contenido pertenecen a sus respectivos titulares.
+
+---
+
+## 🚧 Estado actual
+
+El proyecto se encuentra en desarrollo y continúa evolucionando mediante commits y versiones.
+
+La versión actual se centra en:
+
+* Automatización de la detección del artista.
+* Generación de URLs.
+* Procesamiento de múltiples versiones.
+* Descarga y organización de transcripciones.
+* Manejo de diferentes estructuras de URL.
+* Prevención de archivos duplicados.
+* Recuperación ante errores de rutas.
+
+---
+
+## 💡 Próximas mejoras
+
+Algunas mejoras que podrían incorporarse en futuras versiones:
+
+* [ ] Procesamiento automático de múltiples artistas.
+* [ ] Generación de un índice general de canciones.
+* [ ] Registro de errores en archivos `.log`.
+* [ ] Sistema de reintentos para conexiones fallidas.
+* [ ] Mejor manejo de códigos HTTP.
+* [ ] Detección de cambios en canciones ya descargadas.
+* [ ] Interfaz gráfica.
+* [ ] Opciones de configuración mediante archivo externo.
+* [ ] Generación de diferentes formatos de salida.
+* [ ] Estadísticas más detalladas de la biblioteca.
+
+---
+
+## 📜 Licencia
+
+El código de este proyecto puede ser utilizado y modificado de acuerdo con la licencia definida en el repositorio.
+
+El contenido descargado mediante el programa puede estar sujeto a derechos de autor y a las condiciones de uso de LaCuerda.net.
+
+La licencia del código y los derechos sobre las tablaturas, acordes y demás contenido descargado deben considerarse por separado.
+
+---
+
+## 🎸 Objetivo del proyecto
+
+El objetivo de **Biblioteca LaCuerda** es automatizar una tarea repetitiva: transformar listas de canciones disponibles en LaCuerda en una biblioteca local organizada, manteniendo separadas las diferentes versiones y tipos de transcripción.
+
+```text
+lista.html
+     │
+     ▼
+Detectar artista
+     │
+     ▼
+Resolver URL
+     │
+     ▼
+Detectar canciones
+     │
+     ▼
+Detectar versiones
+     │
+     ▼
+Descargar contenido
+     │
+     ▼
+Biblioteca_LaCuerda/
+     │
+     └── Artista/
+           ├── Canción - Acordes.txt
+           ├── Canción - Tablatura.txt
+           └── Canción - Bajo.txt
+```
