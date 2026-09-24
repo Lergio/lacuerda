@@ -1,5 +1,6 @@
 import os
 import re
+import signal
 import sys
 import time
 import unicodedata
@@ -9,6 +10,34 @@ from bs4 import BeautifulSoup
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+# --- Manejo de interrupciones (Ctrl+C / cierre de terminal / kill) ---
+# En vez de cortar de golpe en medio de una descarga o escritura, marcamos
+# esta bandera y el script termina el ítem que tiene entre manos, guarda
+# el resumen parcial y sale de forma prolija.
+SE_PIDIO_DETENER = False
+
+
+def _manejar_senal_interrupcion(signum, frame):
+    global SE_PIDIO_DETENER
+    if not SE_PIDIO_DETENER:
+        print("\n\n🛑 Se pidió detener el script (Ctrl+C o cierre). "
+              "Terminando la descarga en curso y cerrando de forma prolija...")
+        print("   (presioná Ctrl+C de nuevo para forzar el corte inmediato)")
+        SE_PIDIO_DETENER = True
+    else:
+        # Segundo Ctrl+C: el usuario quiere cortar ya mismo, sin esperar.
+        print("\n❌ Corte forzado por el usuario.")
+        sys.exit(1)
+
+
+def instalar_manejador_interrupciones():
+    signal.signal(signal.SIGINT, _manejar_senal_interrupcion)
+    try:
+        signal.signal(signal.SIGTERM, _manejar_senal_interrupcion)
+    except (AttributeError, ValueError):
+        # SIGTERM puede no estar disponible en algunas plataformas/hilos
+        pass
 
 # Mapeo de la letra de tipo (según el atributo lcd) a un nombre legible
 TIPOS = {
@@ -152,6 +181,20 @@ def nombre_seguro(texto):
     return re.sub(r"\s+", " ", limpio)
 
 
+def escribir_archivo_atomico(ruta_final, contenido):
+    """Escribe el contenido en un archivo temporal y recién al final lo
+    renombra a la ruta definitiva. Así, si el proceso se corta a mitad de
+    camino (corte de luz, kill -9, crash), nunca queda un .txt corrupto
+    a medio escribir que después el script confundiría con una canción
+    ya descargada correctamente."""
+    ruta_tmp = ruta_final + ".tmp"
+    with open(ruta_tmp, "w", encoding="utf-8") as archivo:
+        archivo.write(contenido)
+        archivo.flush()
+        os.fsync(archivo.fileno())
+    os.replace(ruta_tmp, ruta_final)
+
+
 def pedir_slug_manual(ruta_artista_url_actual):
     """Le pide al usuario el tramo final de la URL del artista
     (ej: 'bersuit' para https://acordes.lacuerda.net/bersuit/)."""
@@ -268,15 +311,98 @@ def procesar_biblioteca_completa():
     descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista)
 
 
+TIMEOUT_SEGUNDOS = 15
+TIMEOUT_SEGUNDOS_REINTENTO = 25  # un poco más generoso para la segunda pasada
+
+
+def mensaje_amigable_error(excepcion):
+    """Traduce una excepción de red a un mensaje corto y entendible para
+    el usuario, en vez de mostrar el texto crudo de la excepción."""
+    if isinstance(excepcion, requests.exceptions.Timeout):
+        return "el servidor tardó demasiado en responder"
+    if isinstance(excepcion, requests.exceptions.ConnectionError):
+        return "no se pudo establecer conexión con el servidor"
+    if isinstance(excepcion, requests.exceptions.RequestException):
+        return "hubo un problema de conexión"
+    return "ocurrió un error inesperado"
+
+
+def es_error_reintentable(excepcion):
+    """Timeouts y errores de conexión son transitorios: vale la pena
+    reintentarlos al final del recorrido en vez de darlos por perdidos."""
+    return isinstance(excepcion, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+
+
+MENSAJES_POR_CODIGO = {
+    403: "acceso rechazado por el servidor",
+    404: "la página no existe",
+    500: "error interno del servidor",
+    502: "servidor no disponible momentáneamente",
+    503: "servicio no disponible en este momento",
+    504: "el servidor tardó demasiado en responder",
+}
+
+
+def mensaje_amigable_codigo(codigo):
+    """Traduce un código HTTP a un mensaje corto y entendible para el
+    usuario, en vez de mostrar solo el número de código."""
+    return MENSAJES_POR_CODIGO.get(codigo, "el servidor rechazó la solicitud")
+
+
+def guardar_version_si_corresponde(res_tab, nombre_artista, titulo, etiqueta, url_version, ruta_final_txt, nombre_archivo):
+    """A partir de una respuesta 200, busca el bloque de tablatura/acordes
+    y lo guarda de forma atómica. Devuelve True si se descargó y guardó
+    correctamente, False si la página no traía el texto esperado."""
+    soup_cancion = BeautifulSoup(res_tab.text, "html.parser")
+
+    # 1. Buscamos el div principal.
+    # Pasamos una lista con "tbody" y "t_body" para cubrir cualquier variante en la web
+    div_contenedor = soup_cancion.find("div", id=["tbody", "t_body"])
+
+    # 2. Buscamos el <pre> dentro de ese div.
+    # Si la web no tuviera el div por alguna razón, hacemos un fallback buscando cualquier <pre>
+    if div_contenedor:
+        bloque_tablatura = div_contenedor.find("pre")
+    else:
+        bloque_tablatura = soup_cancion.find("pre")
+
+    # 3. Verificamos que se haya encontrado y que contenga texto real
+    if not (bloque_tablatura and bloque_tablatura.text.strip()):
+        print(f"         ⚠️ No se encontró el texto de la canción en {url_version}")
+        return False
+
+    # Al usar .text, BeautifulSoup descarta las etiquetas <div> y <a> internas,
+    # pero mantiene intactos los espacios y la alineación de los acordes.
+    texto_tablatura = bloque_tablatura.text
+
+    contenido = (
+        f"ARTISTA: {nombre_artista}\n"
+        f"CANCION: {titulo}\n"
+        f"VERSION: {etiqueta}\n"
+        f"URL: {url_version}\n"
+        + "=" * 40 + "\n\n"
+        + texto_tablatura
+    )
+    escribir_archivo_atomico(ruta_final_txt, contenido)
+
+    print(f"         ✅ ¡Descargada! -> {nombre_archivo}")
+    return True
+
+
 def descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista):
     """Recorre las canciones y descarga cada versión. Si detecta un 404 en el
     primer intento real de descarga (posible indicio de que la ruta de
     artista sigue siendo incorrecta pese a la validación previa), corta el
     recorrido, pide el tramo de URL correcto por teclado y reinicia todo
-    el recorrido de lista.html con la ruta corregida."""
+    el recorrido de lista.html con la ruta corregida.
+
+    Las versiones que tardan demasiado en responder (timeout) o fallan por
+    un problema de conexión transitorio no se dan por perdidas: se guardan
+    en una cola y se reintentan una vez más al terminar todo el recorrido."""
     total_versiones_descargadas = 0
     total_versiones_omitidas = 0
     intentos_reales = 0
+    pendientes_reintento = []
 
     for i, (slug, (titulo, lcd)) in enumerate(canciones.items(), start=1):
         versiones = parsear_versiones(lcd, slug, ruta_artista_url)
@@ -310,64 +436,96 @@ def descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artist
             time.sleep(2)
 
             try:
-                res_tab = requests.get(url_version, headers=HEADERS, timeout=15)
-
-                if res_tab.status_code == 404 and intentos_reales == 0:
-                    # Primer intento real de descarga y da 404: cortamos el
-                    # recorrido, pedimos la ruta correcta y reiniciamos todo
-                    # el recorrido de lista.html desde cero con esa ruta.
-                    print("         ⚠️ 404 en el primer intento real. La ruta de artista sigue mal.")
-                    nueva_ruta = pedir_slug_manual(ruta_artista_url)
-                    if not nueva_ruta:
-                        print("         ❌ No se ingresó ninguna ruta. Abortando.")
-                        sys.exit(1)
-                    print(f"         🔁 Reiniciando el recorrido de {ARCHIVO_HTML_LOCAL} con la ruta '{nueva_ruta}'...")
-                    return descargar_canciones(canciones, nueva_ruta, ruta_carpeta, nombre_artista)
-
-                intentos_reales += 1
-
-                if res_tab.status_code == 200:
-                    soup_cancion = BeautifulSoup(res_tab.text, "html.parser")
-                    
-                    # 1. Buscamos el div principal. 
-                    # Pasamos una lista con "tbody" y "t_body" para cubrir cualquier variante en la web
-                    div_contenedor = soup_cancion.find("div", id=["tbody", "t_body"])
-                    
-                    # 2. Buscamos el <pre> dentro de ese div. 
-                    # Si la web no tuviera el div por alguna razón, hacemos un fallback buscando cualquier <pre>
-                    if div_contenedor:
-                        bloque_tablatura = div_contenedor.find("pre")
-                    else:
-                        bloque_tablatura = soup_cancion.find("pre")
-
-                    # 3. Verificamos que se haya encontrado y que contenga texto real
-                    if bloque_tablatura and bloque_tablatura.text.strip():
-                        
-                        # Al usar .text, BeautifulSoup descarta las etiquetas <div> y <a> internas,
-                        # pero mantiene intactos los espacios y la alineación de los acordes.
-                        texto_tablatura = bloque_tablatura.text
-                        
-                        with open(ruta_final_txt, "w", encoding="utf-8") as archivo:
-                            archivo.write(f"ARTISTA: {nombre_artista}\n")
-                            archivo.write(f"CANCION: {titulo}\n")
-                            archivo.write(f"VERSION: {etiqueta}\n")
-                            archivo.write(f"URL: {url_version}\n")
-                            archivo.write("=" * 40 + "\n\n")
-                            archivo.write(texto_tablatura)
-                            
-                        print(f"         ✅ ¡Descargada! -> {nombre_archivo}")
-                        total_versiones_descargadas += 1
-                    else:
-                        print(f"         ⚠️ No se encontró el texto de la canción en {url_version}")
-                else:
-                    print(f"         ⚠️ Servidor rechazó la versión (Código {res_tab.status_code}) -> {url_version}")
+                res_tab = requests.get(url_version, headers=HEADERS, timeout=TIMEOUT_SEGUNDOS)
             except Exception as e:
-                print(f"         ❌ Fallo de conexión: {e}")
+                if es_error_reintentable(e):
+                    print(f"         ⏱️ {mensaje_amigable_error(e)}. Se reintentará al final del recorrido.")
+                    pendientes_reintento.append({
+                        "titulo": titulo,
+                        "etiqueta": etiqueta,
+                        "url_version": url_version,
+                        "ruta_final_txt": ruta_final_txt,
+                        "nombre_archivo": nombre_archivo,
+                    })
+                else:
+                    print(f"         ❌ {mensaje_amigable_error(e)}.")
+
+                if SE_PIDIO_DETENER:
+                    break
+                continue
+
+            if res_tab.status_code == 404 and intentos_reales == 0:
+                # Primer intento real de descarga y da 404: cortamos el
+                # recorrido, pedimos la ruta correcta y reiniciamos todo
+                # el recorrido de lista.html desde cero con esa ruta.
+                print("         ⚠️ 404 en el primer intento real. La ruta de artista sigue mal.")
+                nueva_ruta = pedir_slug_manual(ruta_artista_url)
+                if not nueva_ruta:
+                    print("         ❌ No se ingresó ninguna ruta. Abortando.")
+                    sys.exit(1)
+                print(f"         🔁 Reiniciando el recorrido de {ARCHIVO_HTML_LOCAL} con la ruta '{nueva_ruta}'...")
+                return descargar_canciones(canciones, nueva_ruta, ruta_carpeta, nombre_artista)
+
+            intentos_reales += 1
+
+            if res_tab.status_code == 200:
+                if guardar_version_si_corresponde(res_tab, nombre_artista, titulo, etiqueta, url_version, ruta_final_txt, nombre_archivo):
+                    total_versiones_descargadas += 1
+            else:
+                print(f"         ⚠️ No se pudo obtener esta versión: {mensaje_amigable_codigo(res_tab.status_code)}.")
+
+            if SE_PIDIO_DETENER:
+                # Terminamos el ítem actual de forma completa (ya escrito de
+                # forma atómica arriba) y cortamos acá, antes de arrancar
+                # una nueva descarga.
+                break
+
+        if SE_PIDIO_DETENER:
+            break
+
+    total_versiones_fallidas = 0
+    if pendientes_reintento and not SE_PIDIO_DETENER:
+        print(f"\n--- REINTENTANDO {len(pendientes_reintento)} VERSIÓN/ES QUE TARDARON DEMASIADO ---")
+        for item in pendientes_reintento:
+            if SE_PIDIO_DETENER:
+                total_versiones_fallidas += 1
+                continue
+
+            print(f"   🔁 Reintentando: {item['titulo']} [{item['etiqueta']}]")
+            time.sleep(2)
+
+            try:
+                res_tab = requests.get(item["url_version"], headers=HEADERS, timeout=TIMEOUT_SEGUNDOS_REINTENTO)
+            except Exception as e:
+                print(f"      ❌ {mensaje_amigable_error(e)}. Se descarta esta versión por ahora.")
+                total_versiones_fallidas += 1
+                continue
+
+            if res_tab.status_code == 200:
+                if guardar_version_si_corresponde(
+                    res_tab, nombre_artista, item["titulo"], item["etiqueta"],
+                    item["url_version"], item["ruta_final_txt"], item["nombre_archivo"],
+                ):
+                    total_versiones_descargadas += 1
+                else:
+                    total_versiones_fallidas += 1
+            else:
+                print(f"      ⚠️ {mensaje_amigable_codigo(res_tab.status_code)}.")
+                total_versiones_fallidas += 1
 
     print("\n--- RESUMEN ---")
+    if SE_PIDIO_DETENER:
+        print("⏸️  Detenido por el usuario antes de terminar. Podés volver a")
+        print("    correr el script: las canciones ya descargadas se saltean")
+        print("    automáticamente y continúa desde donde quedó.")
     print(f"Versiones descargadas: {total_versiones_descargadas}")
     print(f"Versiones omitidas (ya existían): {total_versiones_omitidas}")
+    if total_versiones_fallidas:
+        print(f"Versiones que siguieron fallando tras el reintento: {total_versiones_fallidas}")
+        print("   (volvé a correr el script para intentarlas de nuevo; las ya")
+        print("    descargadas se saltean automáticamente)")
 
 
 if __name__ == "__main__":
+    instalar_manejador_interrupciones()
     procesar_biblioteca_completa()
