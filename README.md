@@ -524,4 +524,249 @@ Otros códigos se muestran como un rechazo genérico de la solicitud.
 
 # ⏱️ Pausa entre solicitudes
 
-Ent
+Entre las solicitudes se mantiene una pausa de:
+
+```python
+time.sleep(2)
+```
+
+Esto evita realizar todas las peticiones de manera consecutiva y ayuda a mantener una frecuencia moderada de solicitudes.
+
+El mismo intervalo se utiliza durante los reintentos.
+
+---
+
+# 🚫 Archivos existentes
+
+Si el archivo correspondiente a una versión ya existe, el programa lo omite:
+
+```text
+Cancion - Acordes.txt
+```
+
+No vuelve a descargarlo.
+
+Esto permite:
+
+* Reanudar procesos interrumpidos.
+* Ejecutar nuevamente el script.
+* Actualizar una biblioteca sin descargar nuevamente todo su contenido.
+* Evitar sobrescribir archivos existentes.
+
+---
+
+# 📊 Resumen final
+
+Al terminar el recorrido, el programa muestra un resumen.
+
+Ejemplo:
+
+```text
+--- RESUMEN ---
+Versiones descargadas: 150
+Versiones omitidas (ya existían): 35
+Versiones que siguieron fallando tras el reintento: 4
+```
+
+Si el proceso fue detenido mediante `Ctrl+C`, se informa además:
+
+```text
+⏸️ Detenido por el usuario antes de terminar.
+Podés volver a correr el script: las canciones ya descargadas
+se saltean automáticamente y continúa desde donde quedó.
+```
+
+---
+
+# 🔧 Configuración
+
+La configuración general se encuentra al comienzo de `lacuerda.py`:
+
+```python
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+ARCHIVO_HTML_LOCAL = "lista.html"
+DOMINIO_BASE = "https://acordes.lacuerda.net"
+```
+
+### Carpeta principal
+
+```python
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+```
+
+Define dónde se almacenará la biblioteca.
+
+### Archivo HTML
+
+```python
+ARCHIVO_HTML_LOCAL = "lista.html"
+```
+
+Define el archivo que contiene la lista de canciones.
+
+### Dominio
+
+```python
+DOMINIO_BASE = "https://acordes.lacuerda.net"
+```
+
+Define el dominio utilizado para construir las URLs.
+
+---
+
+# 📂 Organización de la biblioteca
+
+La biblioteca se organiza por artista:
+
+```text
+Biblioteca_LaCuerda/
+│
+├── Abel_Pintos/
+│   ├── Aventura - Acordes.txt
+│   ├── Aventura - Tablatura.txt
+│   └── ...
+│
+├── Attaque_77/
+│   ├── Arrancacorazones - Acordes.txt
+│   └── ...
+│
+└── Los_Pericos/
+    ├── Sin_Cadenas - Acordes.txt
+    └── ...
+```
+
+Cada ejecución trabaja con **un artista asociado al `lista.html` utilizado**.
+
+El programa organiza las canciones de ese artista dentro de su carpeta correspondiente.
+
+---
+
+# 🧩 Dependencias
+
+El proyecto utiliza módulos de la biblioteca estándar de Python:
+
+* `os`
+* `re`
+* `signal`
+* `sys`
+* `time`
+* `unicodedata`
+
+Y dos dependencias externas:
+
+* `requests`
+* `beautifulsoup4`
+
+Instalación:
+
+```bash
+pip install requests beautifulsoup4
+```
+
+---
+
+# 🔒 Uso responsable
+
+Este proyecto automatiza solicitudes hacia un sitio web externo.
+
+Se recomienda:
+
+* Respetar los términos de uso del sitio.
+* Respetar `robots.txt` y cualquier restricción aplicable.
+* Mantener una frecuencia razonable de solicitudes.
+* No eliminar la pausa entre solicitudes sin una razón válida.
+* Utilizar el contenido descargado de acuerdo con los derechos de autor correspondientes.
+* No redistribuir contenido protegido sin la autorización necesaria.
+
+El proyecto automatiza el procesamiento y organización del contenido; los derechos sobre dicho contenido pertenecen a sus respectivos titulares.
+
+---
+
+# 🚧 Estado actual
+
+La versión actual incorpora:
+
+* Detección automática del artista.
+* Generación y validación de rutas.
+* Procesamiento de múltiples versiones.
+* Descarga de diferentes tipos de transcripción.
+* Prevención de archivos duplicados.
+* Escritura atómica.
+* Interrupción segura.
+* Reanudación del proceso.
+* Manejo de errores HTTP.
+* Reintentos de errores de conexión.
+* Resumen detallado de resultados.
+
+---
+
+# 💡 Próximas mejoras
+
+Algunas posibles mejoras para futuras versiones:
+
+* [ ] Procesamiento automático de múltiples artistas.
+* [ ] Generación de un índice general de canciones.
+* [ ] Registro de errores en archivos `.log`.
+* [ ] Sistema de reintentos configurable.
+* [ ] Configuración mediante archivo externo.
+* [ ] Detección de cambios en canciones ya descargadas.
+* [ ] Interfaz gráfica.
+* [ ] Generación de diferentes formatos de salida.
+* [ ] Estadísticas más detalladas de la biblioteca.
+* [ ] Mejor gestión de versiones modificadas en el sitio.
+
+---
+
+# 🎯 Objetivo del proyecto
+
+El objetivo de **Biblioteca LaCuerda** es automatizar una tarea repetitiva: transformar listas de canciones disponibles en LaCuerda en una biblioteca local organizada, manteniendo separadas las diferentes versiones y tipos de transcripción.
+
+El flujo general es:
+
+```text
+                    lista.html
+                        │
+                        ▼
+                Detectar artista
+                        │
+                        ▼
+                Generar posibles
+                    URLs
+                        │
+                        ▼
+                Validar ruta
+                        │
+                        ▼
+                Detectar canciones
+                        │
+                        ▼
+                Detectar versiones
+                        │
+                        ▼
+                 Descargar
+                        │
+              ┌─────────┴─────────┐
+              │                   │
+          Correcto           Error temporal
+              │                   │
+              ▼                   ▼
+        Guardar archivo      Reintentar al final
+              │
+              ▼
+       Biblioteca_LaCuerda/
+              │
+              └── Artista/
+                    ├── Canción - Acordes.txt
+                    ├── Canción - Tablatura.txt
+                    └── Canción - Bajo.txt
+```
+
+---
+
+## 📜 Licencia
+
+La licencia del código del proyecto se encuentra determinada por la configuración del repositorio.
+
+El contenido descargado mediante el programa puede estar sujeto a derechos de autor y a las condiciones de uso de LaCuerda.net.
+
+La licencia del código y los derechos sobre las tablaturas, acordes y demás contenido descargado deben considerarse por separado.
