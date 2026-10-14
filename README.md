@@ -1,550 +1,224 @@
-# 🎸 Biblioteca LaCuerda
+# Biblioteca LaCuerda
 
-Herramienta en Python para automatizar la creación y actualización de una biblioteca local de **acordes, tablaturas, bajo, armónica y teclado** a partir de listas de canciones de [LaCuerda.net](https://lacuerda.net/).
+Herramienta escrita en Python para recorrer el índice alfabético de artistas de [LaCuerda.net](https://acordes.lacuerda.net), obtener sus canciones y descargar las distintas versiones disponibles de acordes, tablaturas y otros formatos a archivos `.txt`.
 
-El proyecto permite analizar un archivo `lista.html`, identificar el artista y sus canciones, detectar las diferentes versiones disponibles y descargar las transcripciones como archivos `.txt` organizados por artista.
+La versión **v5.2** permite trabajar por letra del índice. Esto divide el recorrido en unidades independientes y evita tener que volver a procesar todo el sitio cuando se quiera actualizar una parte de la biblioteca.
 
-A partir de la **versión 4**, el proyecto incorpora una interfaz de menú en consola y separa el lanzador de la lógica principal de procesamiento.
+## Características
 
----
+- **Scraping por letra:** el usuario selecciona una letra de la A a la Z.
+- **Descubrimiento automático de páginas:** obtiene los offsets del índice alfabético (`index0.html`, `index100.html`, `index200.html`, etc.) desde la paginación del sitio.
+- **Descubrimiento de artistas:** extrae nombre, URL y cantidad de canciones declaradas del listado `ul#i_main`.
+- **Extracción de canciones:** entra a cada artista y procesa `ul#b_main`, incluyendo título, identificador, enlace y atributo `lcd`.
+- **Descarga de múltiples versiones:** interpreta el atributo `lcd` para identificar acordes, tablaturas y otros tipos de transcripción.
+- **Una carpeta por letra:** cada letra tiene su propio directorio, con archivos de control y carpetas de artistas.
+- **Informes JSON y TXT:** registra artistas, canciones, páginas de índice, cantidades y errores.
+- **Reutilización de conexión HTTP:** utiliza una única `requests.Session()` durante el recorrido de una letra, permitiendo reutilizar conexiones cuando el servidor lo admite.
+- **Peticiones moderadas:** espera un segundo entre peticiones por defecto.
+- **Reanudación:** conserva el control parcial al interrumpir el proceso y omite archivos `.txt` que ya existen.
+- **Escritura atómica:** los archivos de control y las canciones se escriben primero en archivos temporales y luego se reemplazan, reduciendo el riesgo de dejar archivos incompletos.
+- **Reintentos:** vuelve a intentar algunas descargas que fallan por problemas transitorios de conexión.
+- **Menú interactivo:** permite ejecutar el scraping, verificar una letra y consultar su estado.
 
-# 🚀 Versión 4
+## Requisitos
 
-La versión 4 introduce una nueva organización del proyecto:
+- Python 3.9 o posterior recomendado.
+- Conexión a Internet.
+- Bibliotecas Python:
+  - `requests`
+  - `beautifulsoup4`
 
-```text
-lacuerda_v4.py
-       │
-       ▼
-   Menú principal
-       │
-       ├── Descargar / actualizar biblioteca
-       │
-       ├── Verificar lista.html
-       │
-       ├── Ver estado de descargas
-       │
-       └── Salir
-       │
-       ▼
-funciones.py
-       │
-       └── Lógica de procesamiento
-```
+## Instalación
 
-El archivo `lacuerda_v4.py` funciona como **lanzador** y delega las tareas principales en `funciones.py`.
+1. Instalar Python si todavía no está instalado.
+2. Clonar el repositorio o descargar sus archivos.
+3. Abrir una terminal en la carpeta del proyecto.
+4. Instalar las dependencias:
 
-Esto permite separar la interfaz de usuario de las funciones encargadas del procesamiento.
+   ```bash
+   python -m pip install requests beautifulsoup4
+   ```
 
----
-
-# 📋 Características
-
-## Biblioteca
-
-* 🎤 Detección automática del artista desde `lista.html`.
-* ⌨️ Posibilidad de indicar el artista manualmente.
-* 🔤 Generación automática del `slug` utilizado por LaCuerda.
-* 🌎 Manejo de tildes y caracteres especiales.
-* `ñ` convertida al formato utilizado por LaCuerda.
-* 🅰️ Tratamiento especial para `El`, `La`, `Los` y `Las` al resolver URLs.
-* 🔎 Verificación de la ruta del artista antes de descargar.
-* ✏️ Posibilidad de introducir manualmente la ruta correcta.
-* 🎵 Detección de canciones desde `lista.html`.
-* 🧹 Eliminación de canciones duplicadas.
-* 🎼 Detección de múltiples versiones.
-* 🎸 Soporte para diferentes tipos de transcripción:
-
-  * Acordes
-  * Tablatura
-  * Bajo
-  * Armónica
-  * Teclado
-* 📄 Un archivo `.txt` independiente para cada versión.
-* 🚫 Evita descargar nuevamente archivos existentes.
-* 💾 Escritura atómica de los archivos.
-* 🛑 Interrupción segura mediante `Ctrl+C`.
-* 🔁 Reintentos de errores de conexión y `timeout`.
-* 📊 Resumen de descargas y errores.
-
-## Interfaz
-
-La versión 4 incorpora un menú principal con las siguientes opciones:
+## Archivos del proyecto
 
 ```text
-========== LaCuerda Downloader ==========
-  1) Descargar / actualizar biblioteca (usa el lista.html actual)
-  2) Verificar el lista.html actual (sin descargar nada)
-  3) Ver estado de descargas de un artista
-  4) Salir
-==========================================
-```
-
----
-
-# 🖥️ Menú principal
-
-Al ejecutar `lacuerda_v4.py`, se muestra el menú principal.
-
-```bash
-python lacuerda_v4.py
-```
-
-El programa queda esperando que el usuario seleccione una de las opciones disponibles.
-
----
-
-## 1. Descargar / actualizar biblioteca
-
-Esta opción ejecuta:
-
-```python
-flc.procesar_biblioteca_completa()
-```
-
-Utiliza el `lista.html` actual y ejecuta el proceso de descarga o actualización de la biblioteca.
-
-Si ya existen archivos descargados, estos se omiten de acuerdo con la lógica implementada en `funciones.py`.
-
-Esta opción es la equivalente al proceso principal de descarga de las versiones anteriores, pero ahora se accede a ella desde el menú.
-
----
-
-## 2. Verificar el `lista.html` actual
-
-Esta opción ejecuta:
-
-```python
-flc.verificar_lista_html()
-```
-
-Permite verificar el archivo `lista.html` **sin iniciar una descarga**.
-
-Esta funcionalidad está pensada para poder revisar el estado o contenido de la lista antes de ejecutar una actualización de la biblioteca.
-
-> El detalle exacto de las comprobaciones realizadas pertenece a `funciones.py`.
-
----
-
-## 3. Ver estado de descargas de un artista
-
-Esta opción solicita:
-
-```text
-Nombre del artista (tal como se guardó la carpeta):
-```
-
-Por ejemplo:
-
-```text
-Abel Pintos
-```
-
-Luego ejecuta:
-
-```python
-flc.contar_descargas_artista(nombre_artista)
-```
-
-El programa muestra:
-
-```text
-📁 Carpeta: ...
-🎵 Archivos .txt descargados: ...
-```
-
-Esto permite consultar rápidamente cuántos archivos `.txt` existen para un determinado artista.
-
-El nombre debe coincidir con el utilizado para la carpeta de la biblioteca.
-
----
-
-## 4. Salir
-
-Finaliza el programa:
-
-```text
-¡Listo! Hasta la próxima.
-```
-
----
-
-# 📁 Estructura del proyecto
-
-La versión 4 separa el lanzador de las funciones principales.
-
-La estructura esperada es:
-
-```text
-scraps_lacuerda/
-│
-├── lacuerda_v4.py
+.
+├── lacuerda.py
 ├── funciones.py
-└── lista.html
-```
-
-La biblioteca generada se almacena en:
-
-```text
-Biblioteca_LaCuerda/
-```
-
-Por ejemplo:
-
-```text
-scraps_lacuerda/
-│
-├── lacuerda_v4.py
-├── funciones.py
-├── lista.html
-│
+├── README.md
+├── LICENSE
 └── Biblioteca_LaCuerda/
-    │
-    ├── Abel_Pintos/
-    │   ├── Cancion 1 - Acordes.txt
-    │   ├── Cancion 1 - Tablatura.txt
-    │   └── Cancion 2 - Acordes.txt
-    │
-    └── Attaque_77/
-        ├── Cancion 1 - Acordes.txt
-        └── Cancion 2 - Tablatura.txt
+    ├── a/
+    │   ├── artistas.json
+    │   ├── artistas.txt
+    │   ├── Artista 1/
+    │   │   ├── Canción - Acordes.txt
+    │   │   └── Canción - Tablatura.txt
+    │   └── ...
+    ├── b/
+    │   ├── artistas.json
+    │   ├── artistas.txt
+    │   └── ...
+    └── ...
 ```
 
----
+`Biblioteca_LaCuerda/` se crea al ejecutar el programa. No es necesario crear manualmente las carpetas por letra.
 
-# 🧩 Separación de responsabilidades
+## Uso
 
-Una de las principales modificaciones de la versión 4 es la separación entre el programa principal y las funciones.
+Ejecutar:
 
-## `lacuerda_v4.py`
-
-Es el **lanzador**.
-
-Se encarga de:
-
-* Mostrar el banner.
-* Mostrar el menú.
-* Recibir la opción seleccionada.
-* Ejecutar la función correspondiente.
-* Volver al menú después de cada operación.
-* Finalizar el programa cuando el usuario selecciona salir.
-
-El archivo importa las funciones mediante:
-
-```python
-import funciones as flc
+```bash
+python lacuerda.py
 ```
 
----
-
-## `funciones.py`
-
-Contiene la lógica real del proyecto.
-
-Entre las funciones utilizadas actualmente por el lanzador se encuentran:
-
-```python
-flc.procesar_biblioteca_completa()
-flc.verificar_lista_html()
-flc.contar_descargas_artista()
-flc.instalar_manejador_interrupciones()
-```
-
-La separación permite modificar la lógica del descargador sin tener que modificar necesariamente el menú principal.
-
----
-
-# 🎨 Banner
-
-Al iniciar el programa se muestra un pequeño banner:
+El programa presenta el siguiente menú:
 
 ```text
-░▄▀▀▀▀▄░░▄▄░░░░░░░░░░░
-█░░░░░░▀▀░░█░░░░░░▄░▄░
-█░║░░░░██░████████████
+Biblioteca LaCuerda v5.2
+
+1) Scrapear una letra y descargar
+2) Verificar una letra + primer artista
+3) Mostrar estado de una letra
+4) Salir
 ```
 
-seguido del título:
+### 1. Scrapear una letra y descargar
+
+El programa solicita una letra de la A a la Z. Por ejemplo, si se ingresa `m`, recorre las páginas del índice de esa letra, descubre los artistas, entra a sus páginas, extrae las canciones y descarga las versiones disponibles.
+
+Todo el trabajo de esa ejecución se organiza dentro de:
 
 ```text
-========== LaCuerda Downloader ==========
+Biblioteca_LaCuerda/m/
 ```
 
----
+Las demás letras no se recorren durante esa ejecución.
 
-# 🎵 Procesamiento de canciones
+### 2. Verificar una letra
 
-El sistema utiliza `lista.html` como fuente de información para identificar las canciones del artista.
+Permite hacer una prueba acotada del índice y del primer artista encontrado, sin iniciar el recorrido completo de la letra. Es útil para revisar que el sitio siga respondiendo con la estructura HTML esperada.
 
-El proceso general es:
+### 3. Mostrar estado de una letra
 
-```text
-lista.html
-    │
-    ▼
-Identificación del artista
-    │
-    ▼
-Detección de canciones
-    │
-    ▼
-Resolución de URL
-    │
-    ▼
-Detección de versiones
-    │
-    ▼
-Descarga
-    │
-    ▼
-Archivos .txt
-```
+Consulta el control local de una letra y muestra las cantidades registradas, según la información disponible en `artistas.json`.
 
-La lógica detallada del procesamiento se encuentra en `funciones.py`.
+### 4. Salir
 
----
+Cierra el programa.
 
-# 🎼 Tipos de versiones
+## Estructura de salida
 
-El sistema reconoce actualmente los siguientes tipos:
-
-| Código | Tipo      |
-| ------ | --------- |
-| `R`    | Acordes   |
-| `T`    | Tablatura |
-| `B`    | Bajo      |
-| `H`    | Armónica  |
-| `K`    | Teclado   |
-
-Estos códigos son interpretados a partir de la información proporcionada por LaCuerda.
-
----
-
-# 📄 Archivos generados
-
-Las diferentes versiones de una canción se almacenan como archivos independientes.
-
-Ejemplo:
+Cada letra mantiene sus propios archivos de control y carpetas de artistas:
 
 ```text
 Biblioteca_LaCuerda/
-└── Abel_Pintos/
-    ├── La_Llave - Acordes.txt
-    ├── La_Llave - Tablatura.txt
-    └── La_Llave - Bajo.txt
+└── m/
+    ├── artistas.json
+    ├── artistas.txt
+    ├── Artista Uno/
+    │   ├── Canción A - Acordes.txt
+    │   └── Canción A - Tablatura.txt
+    └── Artista Dos/
+        └── Canción B - Acordes.txt
 ```
 
-Cuando existen varias versiones del mismo tipo, se utilizan números para evitar sobrescribir archivos:
+### `artistas.json`
+
+Es el registro estructurado de la letra. Incluye, entre otros datos:
+
+- letra procesada y URL de origen;
+- páginas del índice recorridas;
+- artistas descubiertos;
+- URL y nombre de cada artista;
+- cantidad de canciones declaradas por el índice;
+- canciones encontradas, con título, enlace, identificador y `lcd`;
+- resumen de páginas, artistas, canciones y versiones;
+- errores detectados durante el recorrido.
+
+El archivo se actualiza durante el proceso para conservar el avance parcial.
+
+### `artistas.txt`
+
+Es una versión legible del control JSON. Incluye el resumen del recorrido, el listado de artistas y canciones y los errores registrados.
+
+### Archivos `.txt` de canciones
+
+Cada versión se guarda por separado. Los archivos incluyen los metadatos de artista, canción, tipo de versión y URL de origen, seguidos por el contenido de acordes o tablatura.
+
+Ejemplos:
 
 ```text
-Cancion - Acordes 1.txt
-Cancion - Acordes 2.txt
-Cancion - Acordes 3.txt
+Canción A - Acordes.txt
+Canción A - Tablatura.txt
+Canción A - Acordes 2.txt
 ```
 
----
+Los nombres se diferencian cuando una canción tiene varias versiones del mismo tipo, para evitar sobrescribirlas entre sí.
 
-# 💾 Seguridad de los archivos
+## Reanudar y actualizar una letra
 
-La versión anterior del descargador incorporó escritura atómica para evitar archivos incompletos.
+Si se interrumpe el programa con `Ctrl+C`, se intenta terminar el ítem actual y guardar el estado parcial. Al ejecutar nuevamente esa letra:
 
-El principio es:
+- se reutiliza el `artistas.json` existente como punto de partida;
+- se vuelven a consultar las páginas del índice de esa letra;
+- se agregan los artistas nuevos encontrados;
+- se conservan las canciones ya registradas mientras se actualiza la información del artista;
+- se omiten los archivos de canción que ya existen;
+- se vuelven a intentar las descargas que no quedaron guardadas.
 
-```text
-Descarga
-   │
-   ▼
-Archivo temporal .tmp
-   │
-   ▼
-Escritura completa
-   │
-   ▼
-Renombrado al archivo definitivo
-```
+**Importante:** el control JSON conserva información de ejecuciones anteriores y acumula los errores registrados. Si necesitás reconstruir desde cero el inventario de una letra, guardá una copia de su carpeta y luego decidí qué archivos de control borrar antes de volver a ejecutarla.
 
-De esta forma, una interrupción durante la escritura no debería dejar un `.txt` parcialmente escrito que pueda confundirse con una descarga completa.
+## Conexiones y ritmo de scraping
 
----
+El programa crea una única `requests.Session()` para cada ejecución de una letra. Esto permite reutilizar conexiones HTTP cuando el servidor y las condiciones de red lo permiten; no significa que todas las peticiones deban usar necesariamente una misma conexión TCP.
 
-# 🛑 Interrupción segura
-
-El sistema mantiene el manejo de interrupciones incorporado en versiones anteriores.
-
-Al presionar:
-
-```text
-Ctrl+C
-```
-
-el proceso puede detenerse de forma controlada.
-
-La instalación del manejador se realiza al iniciar el programa:
+Por defecto, se espera **1 segundo entre peticiones** y se usan tiempos máximos de espera para las solicitudes. Estos valores se pueden ajustar en `funciones_lc_v5.py`:
 
 ```python
-flc.instalar_manejador_interrupciones()
+TIMEOUT_SEGUNDOS = 20
+TIMEOUT_REINTENTO = 30
+ESPERA_ENTRE_PETICIONES = 1.0
+ESPERA_ENTRE_REINTENTOS = 2.0
 ```
 
----
+Se recomienda mantener un ritmo moderado para no generar una carga innecesaria sobre el sitio.
 
-# 🔁 Reanudación
+## Cómo está organizado el código
 
-Los archivos que ya existen no necesitan descargarse nuevamente.
+- **`lacuerda.py`:** contiene el menú principal y delega las acciones.
+- **`funciones.py`:** implementa las peticiones HTTP, el análisis del HTML, el descubrimiento de índices y artistas, la extracción de canciones, las descargas y los archivos de control.
 
-Esto permite detener el proceso y volver a ejecutar la opción:
+## Limitaciones y consideraciones
 
-```text
-1) Descargar / actualizar biblioteca
-```
+- La estructura del scraper depende del HTML que publique LaCuerda.net. Si el sitio cambia los identificadores o la organización de sus páginas, puede ser necesario adaptar los selectores.
+- Una canción puede no estar disponible, responder con un error HTTP o no contener el bloque de texto esperado; esos casos se registran como errores o descargas fallidas.
+- La cantidad de canciones declarada en el índice puede diferir de la cantidad extraída.
+- El programa evita sobrescribir archivos existentes; por eso, si una versión ya descargada cambia en el sitio, no se reemplaza automáticamente.
+- El control local representa lo que el scraper encontró y procesó; no garantiza que el índice del sitio esté completo ni que todas las transcripciones estén disponibles.
 
-para continuar con el procesamiento.
+## Historial de versiones
 
----
+### v5.2
 
-# 🌐 Manejo de errores
+- Se incorpora la selección interactiva de una letra del índice alfabético.
+- Cada letra guarda su inventario y sus canciones en una carpeta independiente.
+- Los archivos `artistas.json` y `artistas.txt` quedan separados por letra.
+- Las opciones del menú permiten ejecutar, verificar y consultar el estado de una letra.
 
-El descargador cuenta con mecanismos para manejar errores de conexión, `timeout` y determinados códigos HTTP.
+### v5.1
 
-Los errores de conexión transitorios pueden ser reintentados al finalizar el recorrido.
+- Se integra el descubrimiento de artistas con el descargador de canciones.
+- Se reutiliza una `requests.Session()` durante el recorrido.
+- Se mantiene el control JSON/TXT y la descarga de versiones a archivos `.txt`.
 
-Esto permite que un fallo temporal de red no necesariamente interrumpa toda la descarga.
+### v4
 
----
+- Descarga de canciones a partir de un `lista.html` local con la lista de canciones de un artista.
+- Soporte para múltiples versiones.
+- Validación de la ruta del artista, reintentos y escritura atómica.
+- Menú para descargar/actualizar, verificar la lista y consultar el estado.
 
-# 🛠️ Requisitos
+## Licencia
 
-Se necesita:
-
-* **Python 3.8 o superior**
-* `requests`
-* `beautifulsoup4`
-
-Instalar las dependencias:
-
-```bash
-pip install requests beautifulsoup4
-```
-
----
-
-# 🚀 Instalación
-
-Clonar el repositorio:
-
-```bash
-git clone https://github.com/Lergio/scraps_lacuerda.git
-```
-
-Entrar en la carpeta:
-
-```bash
-cd scraps_lacuerda
-```
-
-Instalar las dependencias:
-
-```bash
-pip install requests beautifulsoup4
-```
-
-Colocar el `lista.html` correspondiente en la carpeta del proyecto.
-
-Finalmente:
-
-```bash
-python lacuerda_v4.py
-```
-
----
-
-# 🔒 Uso responsable
-
-Este proyecto automatiza solicitudes hacia un sitio web externo.
-
-Se recomienda:
-
-* Respetar los términos de uso del sitio.
-* Respetar `robots.txt` y cualquier restricción aplicable.
-* Mantener una frecuencia razonable de solicitudes.
-* No eliminar las pausas entre solicitudes sin una razón válida.
-* Utilizar el contenido descargado de acuerdo con los derechos de autor correspondientes.
-* No redistribuir contenido protegido sin la autorización necesaria.
-
-El proyecto automatiza el procesamiento y organización del contenido; los derechos sobre dicho contenido pertenecen a sus respectivos titulares.
-
----
-
-# 🚧 Estado del proyecto
-
-La versión 4 representa un paso hacia una estructura más modular.
-
-Hasta la versión anterior, el archivo principal concentraba la lógica del descargador.
-
-A partir de esta versión:
-
-```text
-lacuerda_v4.py
-```
-
-se utiliza como punto de entrada y menú, mientras que:
-
-```text
-funciones.py
-```
-
-contiene la lógica de procesamiento.
-
-Esto deja preparado el proyecto para seguir agregando funcionalidades sin concentrar toda la lógica en un único archivo.
-
----
-
-# 💡 Próximas mejoras
-
-Algunas posibles mejoras:
-
-* [ ] Procesamiento automático de múltiples artistas.
-* [ ] Mejoras en la verificación de `lista.html`.
-* [ ] Información más detallada sobre el estado de cada artista.
-* [ ] Registro de errores en archivos `.log`.
-* [ ] Configuración mediante archivo externo.
-* [ ] Detección de cambios en canciones ya descargadas.
-* [ ] Interfaz gráfica.
-* [ ] Generación de índices de canciones.
-* [ ] Estadísticas generales de la biblioteca.
-* [ ] Sistema de actualización más avanzado.
-
----
-
-# 🎯 Objetivo del proyecto
-
-El objetivo de **Biblioteca LaCuerda** es convertir el proceso de recopilación y organización de acordes y tablaturas en una tarea automatizada y reutilizable.
-
-La evolución del proyecto busca pasar de un script puntual a una herramienta organizada:
-
-```text
-                 LaCuerda Downloader
-                         │
-                         ▼
-                    Menú principal
-                         │
-          ┌──────────────┼──────────────┐
-          │              │              │
-          ▼              ▼              ▼
-      Descargar       Verificar      Estado
-          │              │              │
-          └──────────────┼──────────────┘
-                         ▼
-                    funciones.py
-                         │
-                         ▼
-               Biblioteca_LaCuerda/
-                         │
-                  ┌──────┴──────┐
-                  ▼             ▼
-              Artista 1      Artista 2
-                  │             │
-                  ▼             ▼
-               Canciones      Canciones
-```
-
-La versión 4 establece así una base más modular para las próximas etapas del proyecto.
+Este proyecto se distribuye bajo la licencia **GNU General Public License v3.0 (GPL-3.0)**. Consultá el archivo `LICENSE` incluido en el repositorio para ver el texto completo de la licencia.
