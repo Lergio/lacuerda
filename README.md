@@ -1,224 +1,190 @@
-# Biblioteca LaCuerda
+from pathlib import Path
 
-Herramienta escrita en Python para recorrer el índice alfabético de artistas de [LaCuerda.net](https://acordes.lacuerda.net), obtener sus canciones y descargar las distintas versiones disponibles de acordes, tablaturas y otros formatos a archivos `.txt`.
+readme = r"""# Biblioteca LaCuerda
 
-La versión **v5.2** permite trabajar por letra del índice. Esto divide el recorrido en unidades independientes y evita tener que volver a procesar todo el sitio cuando se quiera actualizar una parte de la biblioteca.
+Herramienta escrita en Python para descargar y organizar localmente acordes, tablaturas y otras transcripciones de canciones publicadas en [acordes.lacuerda.net](https://acordes.lacuerda.net/).
+
+El programa utiliza un archivo HTML local (`lista.html`) con el listado de canciones de un artista. A partir de ese listado, identifica las canciones y sus versiones, descarga el contenido disponible y guarda cada transcripción como un archivo de texto `.txt`.
 
 ## Características
 
-- **Scraping por letra:** el usuario selecciona una letra de la A a la Z.
-- **Descubrimiento automático de páginas:** obtiene los offsets del índice alfabético (`index0.html`, `index100.html`, `index200.html`, etc.) desde la paginación del sitio.
-- **Descubrimiento de artistas:** extrae nombre, URL y cantidad de canciones declaradas del listado `ul#i_main`.
-- **Extracción de canciones:** entra a cada artista y procesa `ul#b_main`, incluyendo título, identificador, enlace y atributo `lcd`.
-- **Descarga de múltiples versiones:** interpreta el atributo `lcd` para identificar acordes, tablaturas y otros tipos de transcripción.
-- **Una carpeta por letra:** cada letra tiene su propio directorio, con archivos de control y carpetas de artistas.
-- **Informes JSON y TXT:** registra artistas, canciones, páginas de índice, cantidades y errores.
-- **Reutilización de conexión HTTP:** utiliza una única `requests.Session()` durante el recorrido de una letra, permitiendo reutilizar conexiones cuando el servidor lo admite.
-- **Peticiones moderadas:** espera un segundo entre peticiones por defecto.
-- **Reanudación:** conserva el control parcial al interrumpir el proceso y omite archivos `.txt` que ya existen.
-- **Escritura atómica:** los archivos de control y las canciones se escriben primero en archivos temporales y luego se reemplazan, reduciendo el riesgo de dejar archivos incompletos.
-- **Reintentos:** vuelve a intentar algunas descargas que fallan por problemas transitorios de conexión.
-- **Menú interactivo:** permite ejecutar el scraping, verificar una letra y consultar su estado.
+- **Menú interactivo** para iniciar una descarga, verificar el listado o consultar el estado de un artista.
+- **Lectura de `lista.html` local**, sin tener que reconstruir el listado desde cero en cada ejecución.
+- **Detección automática del artista** cuando el HTML contiene la variable `bName`.
+- **Resolución de rutas de artistas**: prueba nombres de URL habituales y permite ingresar manualmente la ruta correcta si es necesario.
+- **Soporte para varias versiones** de una canción y distintos tipos de transcripción:
+  - Acordes
+  - Tablatura
+  - Bajo
+  - Armónica
+  - Teclado
+- **Prevención de duplicados**: omite archivos `.txt` que ya existen.
+- **Reintento de errores transitorios** de conexión y tiempo de espera.
+- **Escritura segura de archivos** mediante archivos temporales antes de guardar la versión definitiva.
+- **Interrupción controlada**: al presionar `Ctrl+C`, intenta terminar el elemento en curso y cerrar de forma ordenada. Al volver a ejecutar el programa, las descargas existentes se omiten.
+- **Consulta del estado de un artista**, contando los archivos `.txt` guardados en su carpeta.
 
 ## Requisitos
 
-- Python 3.9 o posterior recomendado.
+- Python 3.9 o superior recomendado.
 - Conexión a Internet.
-- Bibliotecas Python:
-  - `requests`
-  - `beautifulsoup4`
+- Un archivo `lista.html` válido, obtenido previamente de LaCuerda y ubicado en la carpeta desde la que se ejecuta el programa.
 
 ## Instalación
 
-1. Instalar Python si todavía no está instalado.
-2. Clonar el repositorio o descargar sus archivos.
-3. Abrir una terminal en la carpeta del proyecto.
-4. Instalar las dependencias:
+### 1. Clonar el repositorio
 
-   ```bash
-   python -m pip install requests beautifulsoup4
-   ```
+```bash
+git clone URL_DE_TU_REPOSITORIO
+cd NOMBRE_DEL_REPOSITORIO
+```
 
-## Archivos del proyecto
+Reemplazá `URL_DE_TU_REPOSITORIO` y `NOMBRE_DEL_REPOSITORIO` por los datos de tu repositorio de GitHub.
+
+### 2. Instalar las dependencias
+
+El proyecto utiliza `requests` y `beautifulsoup4`.
+
+```bash
+python -m pip install requests beautifulsoup4
+```
+
+### 3. Preparar los archivos
+
+Colocá en una misma carpeta:
 
 ```text
 .
-├── lacuerda.py
+├── lacuerda_v4.py
 ├── funciones.py
-├── README.md
-├── LICENSE
-└── Biblioteca_LaCuerda/
-    ├── a/
-    │   ├── artistas.json
-    │   ├── artistas.txt
-    │   ├── Artista 1/
-    │   │   ├── Canción - Acordes.txt
-    │   │   └── Canción - Tablatura.txt
-    │   └── ...
-    ├── b/
-    │   ├── artistas.json
-    │   ├── artistas.txt
-    │   └── ...
-    └── ...
+└── lista.html
 ```
 
-`Biblioteca_LaCuerda/` se crea al ejecutar el programa. No es necesario crear manualmente las carpetas por letra.
+**Importante:** `lacuerda_v4.py` contiene `import funciones as flc`. Por eso, el módulo auxiliar debe llamarse exactamente `funciones.py` y estar en la misma carpeta que el lanzador. Si el archivo descargado se llama `funciones_lc(1).py`, renombralo a `funciones.py` antes de ejecutar el programa.
+
+`lista.html` debe corresponder al listado de canciones que querés procesar. El programa no descarga automáticamente el índice del artista: lee el archivo local.
 
 ## Uso
 
-Ejecutar:
+Desde la terminal, dentro de la carpeta del proyecto, ejecutá:
 
 ```bash
-python lacuerda.py
+python lacuerda_v4.py
 ```
 
-El programa presenta el siguiente menú:
+Se mostrará el menú principal:
 
 ```text
-Biblioteca LaCuerda v5.2
-
-1) Scrapear una letra y descargar
-2) Verificar una letra + primer artista
-3) Mostrar estado de una letra
-4) Salir
+========== LaCuerda Downloader ==========
+  1) Descargar / actualizar biblioteca (usa el lista.html actual)
+  2) Verificar el lista.html actual (sin descargar nada)
+  3) Ver estado de descargas de un artista
+  4) Salir
+==========================================
 ```
 
-### 1. Scrapear una letra y descargar
+### Opción 1: Descargar / actualizar biblioteca
 
-El programa solicita una letra de la A a la Z. Por ejemplo, si se ingresa `m`, recorre las páginas del índice de esa letra, descubre los artistas, entra a sus páginas, extrae las canciones y descarga las versiones disponibles.
+Procesa el `lista.html` actual y descarga las versiones disponibles de las canciones que todavía no estén guardadas.
 
-Todo el trabajo de esa ejecución se organiza dentro de:
+El programa intenta detectar el nombre del artista a partir del HTML. Si no puede encontrarlo, lo solicita por consola. Después valida la ruta del artista en el sitio; si las rutas generadas automáticamente no funcionan, permite ingresar manualmente el tramo correspondiente de la URL.
 
-```text
-Biblioteca_LaCuerda/m/
-```
+Los archivos se guardan dentro de `Biblioteca_LaCuerda`, en una carpeta por artista.
 
-Las demás letras no se recorren durante esa ejecución.
+### Opción 2: Verificar `lista.html`
 
-### 2. Verificar una letra
+Realiza comprobaciones sin descargar canciones. Informa el artista detectado, la cantidad de canciones únicas, la carpeta de destino y los archivos que ya existen. También prueba las posibles rutas del artista en el sitio.
 
-Permite hacer una prueba acotada del índice y del primer artista encontrado, sin iniciar el recorrido completo de la letra. Es útil para revisar que el sitio siga respondiendo con la estructura HTML esperada.
+Usá esta opción antes de una descarga si querés comprobar que el listado local y la ruta del artista parecen correctos.
 
-### 3. Mostrar estado de una letra
+### Opción 3: Ver estado de descargas
 
-Consulta el control local de una letra y muestra las cantidades registradas, según la información disponible en `artistas.json`.
+Solicita el nombre del artista tal como se guardó en la carpeta y muestra la ruta de destino y la cantidad de archivos `.txt` encontrados.
 
-### 4. Salir
+### Opción 4: Salir
 
 Cierra el programa.
 
 ## Estructura de salida
 
-Cada letra mantiene sus propios archivos de control y carpetas de artistas:
+La biblioteca se crea automáticamente cuando se inicia una descarga. La estructura general es similar a esta:
 
 ```text
 Biblioteca_LaCuerda/
-└── m/
-    ├── artistas.json
-    ├── artistas.txt
-    ├── Artista Uno/
-    │   ├── Canción A - Acordes.txt
-    │   └── Canción A - Tablatura.txt
-    └── Artista Dos/
-        └── Canción B - Acordes.txt
+└── Nombre_Del_Artista/
+    ├── Cancion Uno - Acordes.txt
+    ├── Cancion Uno - Tablatura.txt
+    ├── Cancion Dos - Acordes.txt
+    └── ...
 ```
 
-### `artistas.json`
+Los nombres concretos dependen del título de la canción y del tipo o número de versión detectado.
 
-Es el registro estructurado de la letra. Incluye, entre otros datos:
-
-- letra procesada y URL de origen;
-- páginas del índice recorridas;
-- artistas descubiertos;
-- URL y nombre de cada artista;
-- cantidad de canciones declaradas por el índice;
-- canciones encontradas, con título, enlace, identificador y `lcd`;
-- resumen de páginas, artistas, canciones y versiones;
-- errores detectados durante el recorrido.
-
-El archivo se actualiza durante el proceso para conservar el avance parcial.
-
-### `artistas.txt`
-
-Es una versión legible del control JSON. Incluye el resumen del recorrido, el listado de artistas y canciones y los errores registrados.
-
-### Archivos `.txt` de canciones
-
-Cada versión se guarda por separado. Los archivos incluyen los metadatos de artista, canción, tipo de versión y URL de origen, seguidos por el contenido de acordes o tablatura.
-
-Ejemplos:
+Cada archivo de texto incluye los metadatos de la descarga y el contenido extraído:
 
 ```text
-Canción A - Acordes.txt
-Canción A - Tablatura.txt
-Canción A - Acordes 2.txt
+ARTISTA: Nombre del artista
+CANCION: Título de la canción
+VERSION: Acordes
+URL: https://acordes.lacuerda.net/...
+
+========================================
+
+[Contenido de la transcripción]
 ```
 
-Los nombres se diferencian cuando una canción tiene varias versiones del mismo tipo, para evitar sobrescribirlas entre sí.
+Si una canción tiene varias versiones del mismo tipo, se agregan etiquetas numeradas para evitar que los archivos se sobrescriban.
 
-## Reanudar y actualizar una letra
+## Errores, reintentos y continuidad
 
-Si se interrumpe el programa con `Ctrl+C`, se intenta terminar el ítem actual y guardar el estado parcial. Al ejecutar nuevamente esa letra:
+- Los tiempos de espera y ciertos errores de conexión se ponen en una cola para volver a intentarlos al final del recorrido.
+- Si el servidor devuelve un error HTTP, el programa informa el problema con un mensaje breve.
+- Si la ruta del artista parece incorrecta y se detecta un `404` en el primer intento real de descarga, se solicita una ruta manual y se reinicia el recorrido.
+- Los archivos se escriben primero en un archivo temporal y luego se renombran, para reducir el riesgo de dejar una descarga incompleta con el nombre definitivo.
+- Si detenés el proceso con `Ctrl+C`, podés volver a ejecutarlo. Los archivos ya existentes se omiten automáticamente.
 
-- se reutiliza el `artistas.json` existente como punto de partida;
-- se vuelven a consultar las páginas del índice de esa letra;
-- se agregan los artistas nuevos encontrados;
-- se conservan las canciones ya registradas mientras se actualiza la información del artista;
-- se omiten los archivos de canción que ya existen;
-- se vuelven a intentar las descargas que no quedaron guardadas.
+La continuidad se basa en los archivos `.txt` ya guardados: el programa no necesita una base de datos adicional para reconocerlos.
 
-**Importante:** el control JSON conserva información de ejecuciones anteriores y acumula los errores registrados. Si necesitás reconstruir desde cero el inventario de una letra, guardá una copia de su carpeta y luego decidí qué archivos de control borrar antes de volver a ejecutarla.
+## Archivos del proyecto
 
-## Conexiones y ritmo de scraping
+- **`lacuerda_v4.py`**: punto de entrada; muestra el menú y llama a las funciones correspondientes.
+- **`funciones.py`**: contiene la lógica de lectura de `lista.html`, análisis de canciones, resolución de rutas, descarga y guardado de archivos.
+- **`lista.html`**: listado local de canciones que se va a procesar. Debe prepararse por separado.
 
-El programa crea una única `requests.Session()` para cada ejecución de una letra. Esto permite reutilizar conexiones HTTP cuando el servidor y las condiciones de red lo permiten; no significa que todas las peticiones deban usar necesariamente una misma conexión TCP.
+## Consideraciones
 
-Por defecto, se espera **1 segundo entre peticiones** y se usan tiempos máximos de espera para las solicitudes. Estos valores se pueden ajustar en `funciones_lc_v5.py`:
+- El contenido disponible depende de LaCuerda y de la validez de las páginas enlazadas desde el listado.
+- El programa espera encontrar la estructura HTML de las transcripciones en el sitio. Si LaCuerda cambia su estructura, puede ser necesario adaptar el extractor.
+- Se aplica una pausa entre solicitudes y se limita el tiempo de espera de las conexiones; aun así, las descargas pueden tardar según la cantidad de canciones y la respuesta del servidor.
+- Usá la herramienta de manera responsable, respetando las condiciones del sitio y los derechos de los autores y titulares de las transcripciones.
 
-```python
-TIMEOUT_SEGUNDOS = 20
-TIMEOUT_REINTENTO = 30
-ESPERA_ENTRE_PETICIONES = 1.0
-ESPERA_ENTRE_REINTENTOS = 2.0
-```
+## Solución de problemas
 
-Se recomienda mantener un ritmo moderado para no generar una carga innecesaria sobre el sitio.
+**No encuentra `lista.html`**
 
-## Cómo está organizado el código
+Comprobá que el archivo esté en el directorio actual desde el que ejecutás el programa y que su nombre sea exactamente `lista.html`.
 
-- **`lacuerda.py`:** contiene el menú principal y delega las acciones.
-- **`funciones.py`:** implementa las peticiones HTTP, el análisis del HTML, el descubrimiento de índices y artistas, la extracción de canciones, las descargas y los archivos de control.
+**Aparece `ModuleNotFoundError: No module named 'funciones'`**
 
-## Limitaciones y consideraciones
+Verificá que el archivo auxiliar se llame `funciones.py` y esté junto a `lacuerda_v4.py`.
 
-- La estructura del scraper depende del HTML que publique LaCuerda.net. Si el sitio cambia los identificadores o la organización de sus páginas, puede ser necesario adaptar los selectores.
-- Una canción puede no estar disponible, responder con un error HTTP o no contener el bloque de texto esperado; esos casos se registran como errores o descargas fallidas.
-- La cantidad de canciones declarada en el índice puede diferir de la cantidad extraída.
-- El programa evita sobrescribir archivos existentes; por eso, si una versión ya descargada cambia en el sitio, no se reemplaza automáticamente.
-- El control local representa lo que el scraper encontró y procesó; no garantiza que el índice del sitio esté completo ni que todas las transcripciones estén disponibles.
+**No detecta al artista**
 
-## Historial de versiones
+El programa puede solicitar el nombre por consola si no encuentra `bName` en el HTML. Ingresá el nombre con el que querés identificar la carpeta.
 
-### v5.2
+**La ruta del artista devuelve `404`**
 
-- Se incorpora la selección interactiva de una letra del índice alfabético.
-- Cada letra guarda su inventario y sus canciones en una carpeta independiente.
-- Los archivos `artistas.json` y `artistas.txt` quedan separados por letra.
-- Las opciones del menú permiten ejecutar, verificar y consultar el estado de una letra.
+Cuando se solicite, ingresá el tramo correcto de la URL del artista, es decir, la parte que aparece entre `acordes.lacuerda.net/` y la siguiente barra.
 
-### v5.1
+**Faltan algunas versiones**
 
-- Se integra el descubrimiento de artistas con el descargador de canciones.
-- Se reutiliza una `requests.Session()` durante el recorrido.
-- Se mantiene el control JSON/TXT y la descarga de versiones a archivos `.txt`.
+Algunas páginas pueden no estar disponibles o no contener el bloque de transcripción esperado. Revisá los mensajes de la consola y volvé a ejecutar el programa si hubo fallos transitorios.
 
-### v4
+---
 
-- Descarga de canciones a partir de un `lista.html` local con la lista de canciones de un artista.
-- Soporte para múltiples versiones.
-- Validación de la ruta del artista, reintentos y escritura atómica.
-- Menú para descargar/actualizar, verificar la lista y consultar el estado.
+**Proyecto personal de automatización y organización local de transcripciones musicales.**
+"""
 
-## Licencia
-
-Este proyecto se distribuye bajo la licencia **GNU General Public License v3.0 (GPL-3.0)**. Consultá el archivo `LICENSE` incluido en el repositorio para ver el texto completo de la licencia.
+path = Path("/mnt/data/README.md")
+path.write_text(readme, encoding="utf-8")
+print(f"README creado: {path} ({len(readme.splitlines())} líneas)")
