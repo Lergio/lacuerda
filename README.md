@@ -53,12 +53,12 @@ Colocá en una misma carpeta:
 
 ```text
 .
-├── lacuerda_v4.py
+├── lacuerda.py
 ├── funciones.py
 └── lista.html
 ```
 
-**Importante:** `lacuerda_v4.py` contiene `import funciones as flc`. Por eso, el módulo auxiliar debe llamarse exactamente `funciones.py` y estar en la misma carpeta que el lanzador. Si el archivo descargado se llama `funciones_lc(1).py`, renombralo a `funciones.py` antes de ejecutar el programa.
+**Importante:** `lacuerda.py` contiene `import funciones as flc`. Por eso, el módulo auxiliar debe llamarse exactamente `funciones.py` y estar en la misma carpeta que el lanzador. Si el archivo descargado se llama `funciones.py`, renombralo a `funciones.py` antes de ejecutar el programa.
 
 `lista.html` debe corresponder al listado de canciones que querés procesar. El programa no descarga automáticamente el índice del artista: lee el archivo local.
 
@@ -67,13 +67,13 @@ Colocá en una misma carpeta:
 Desde la terminal, dentro de la carpeta del proyecto, ejecutá:
 
 ```bash
-python lacuerda_v4.py
+python lacuerda.py
 ```
 
 Se mostrará el menú principal:
 
 ```text
-========== LaCuerda Downloader ==========
+========== Biblioteca LaCuerda ===========
   1) Descargar / actualizar biblioteca (usa el lista.html actual)
   2) Verificar el lista.html actual (sin descargar nada)
   3) Ver estado de descargas de un artista
@@ -145,7 +145,7 @@ La continuidad se basa en los archivos `.txt` ya guardados: el programa no neces
 
 ## Archivos del proyecto
 
-- **`lacuerda_v4.py`**: punto de entrada; muestra el menú y llama a las funciones correspondientes.
+- **`lacuerda.py`**: punto de entrada; muestra el menú y llama a las funciones correspondientes.
 - **`funciones.py`**: contiene la lógica de lectura de `lista.html`, análisis de canciones, resolución de rutas, descarga y guardado de archivos.
 - **`lista.html`**: listado local de canciones que se va a procesar. Debe prepararse por separado.
 
@@ -164,7 +164,7 @@ Comprobá que el archivo esté en el directorio actual desde el que ejecutás el
 
 **Aparece `ModuleNotFoundError: No module named 'funciones'`**
 
-Verificá que el archivo auxiliar se llame `funciones.py` y esté junto a `lacuerda_v4.py`.
+Verificá que el archivo auxiliar se llame `funciones.py` y esté junto a `lacuerda.py`.
 
 **No detecta al artista**
 
@@ -181,8 +181,3 @@ Algunas páginas pueden no estar disponibles o no contener el bloque de transcri
 ---
 
 **Proyecto personal de automatización y organización local de transcripciones musicales.**
-"""
-
-path = Path("/mnt/data/README.md")
-path.write_text(readme, encoding="utf-8")
-print(f"README creado: {path} ({len(readme.splitlines())} líneas)")
