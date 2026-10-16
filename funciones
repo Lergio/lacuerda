@@ -1,82 +1,40 @@
 """
-funciones.py
-------------------
-Crawler + descargador de LaCuerda v5.2.
-
-Flujo:
-    indice alfabetico -> paginas indexXXX -> artistas -> canciones -> versiones
-    -> archivos TXT
-
-Mantiene una unica requests.Session() durante todo el recorrido para permitir
-reutilizacion de conexiones HTTP.
+funciones_lc.py
+----------------
+Funciones del descargador de acordes/tablaturas de lacuerda.net.
+Este módulo no se ejecuta directamente: es importado por lacuerda_v4.py,
+que expone el menú y dispara estas funciones.
 """
 
-import json
 import os
 import re
 import signal
 import sys
 import time
 import unicodedata
-from collections import Counter
-from urllib.parse import quote, urljoin, urlparse
-
 import requests
 from bs4 import BeautifulSoup
 
-DOMINIO_BASE = "https://acordes.lacuerda.net"
-URL_TABS = f"{DOMINIO_BASE}/tabs"
-CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
-ARCHIVO_JSON = "artistas.json"
-ARCHIVO_TXT = "artistas.txt"
-
-# Cada letra tiene su propia carpeta para poder actualizarla de forma independiente.
-# Ejemplo: Biblioteca_LaCuerda/a/artistas.json
-
-def carpeta_letra(letra):
-    return os.path.join(CARPETA_PRINCIPAL, letra.lower())
-
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/154.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Connection": "keep-alive",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-TIMEOUT_SEGUNDOS = 20
-TIMEOUT_REINTENTO = 30
-ESPERA_ENTRE_PETICIONES = 1.0
-ESPERA_ENTRE_REINTENTOS = 2.0
-
-# Se puede modificar si el sitio agrega/quita letras en el indice.
-LETRAS = list("abcdefghijklmnopqrstuvwxyz")
-
-TIPOS = {
-    "R": "Acordes",
-    "T": "Tablatura",
-    "B": "Bajo",
-    "H": "Armonica",
-    "K": "Teclado",
-}
-
+# --- Manejo de interrupciones (Ctrl+C / cierre de terminal / kill) ---
+# En vez de cortar de golpe en medio de una descarga o escritura, marcamos
+# esta bandera y el script termina el ítem que tiene entre manos, guarda
+# el resumen parcial y sale de forma prolija.
 SE_PIDIO_DETENER = False
 
-
-# ---------------------------------------------------------------------------
-# Interrupciones
-# ---------------------------------------------------------------------------
 
 def _manejar_senal_interrupcion(signum, frame):
     global SE_PIDIO_DETENER
     if not SE_PIDIO_DETENER:
-        print("\n\n🛑 Se pidió detener el script.")
-        print("   Terminando el ítem actual y guardando el control parcial...")
-        print("   (Ctrl+C nuevamente fuerza la salida inmediata)")
+        print("\n\n🛑 Se pidió detener el script (Ctrl+C o cierre). "
+              "Terminando la descarga en curso y cerrando de forma prolija...")
+        print("   (presioná Ctrl+C de nuevo para forzar el corte inmediato)")
         SE_PIDIO_DETENER = True
     else:
+        # Segundo Ctrl+C: el usuario quiere cortar ya mismo, sin esperar.
         print("\n❌ Corte forzado por el usuario.")
         sys.exit(1)
 
@@ -86,26 +44,354 @@ def instalar_manejador_interrupciones():
     try:
         signal.signal(signal.SIGTERM, _manejar_senal_interrupcion)
     except (AttributeError, ValueError):
+        # SIGTERM puede no estar disponible en algunas plataformas/hilos
         pass
 
+# Mapeo de la letra de tipo (según el atributo lcd) a un nombre legible
+TIPOS = {
+    "R": "Acordes",
+    "T": "Tablatura",
+    "B": "Bajo",
+    "H": "Armonica",
+    "K": "Teclado",
+}
 
-# ---------------------------------------------------------------------------
-# HTTP
-# ---------------------------------------------------------------------------
-
-def crear_sesion():
-    """Crea UNA sesión que se reutiliza durante todo el scraping."""
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    return session
+# --- Configuración general (esto ya no cambia por artista) ---
+CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
+ARCHIVO_HTML_LOCAL = "lista.html"
+DOMINIO_BASE = "https://acordes.lacuerda.net"
 
 
-def obtener(session, url, timeout=TIMEOUT_SEGUNDOS):
-    """GET usando la sesión persistente."""
-    return session.get(url, timeout=timeout)
+def slugify_artista(nombre):
+    """Convierte 'Abel Pintos' -> 'abel_pintos', sacando tildes/ñ,
+    que es el formato que usa lacuerda.net en sus URLs.
+
+    Caso particular: lacuerda.net no reemplaza la 'ñ' por 'n' sino por 'ni'
+    (ej: 'Chaqueño' -> 'chaquenio', no 'chaqueno'). Por eso la reemplazamos
+    explícitamente ANTES de sacar el resto de las tildes con NFKD, porque
+    esa normalización la convertiría en una simple 'n'."""
+    con_ni = nombre.replace("ñ", "ni").replace("Ñ", "Ni")
+    sin_tildes = unicodedata.normalize("NFKD", con_ni)
+    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    slug = sin_tildes.lower().strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = slug.strip("_")
+    return slug
+
+
+# Artículos iniciales que lacuerda.net suele omitir al armar la URL
+# del artista (ej: "Los Pericos" -> lacuerda.net/pericos/, no /los_pericos/)
+ARTICULOS_INICIALES = ("el", "la", "los", "las")
+
+
+def quitar_articulo_inicial(nombre):
+    """Si el nombre del artista empieza con un artículo (El/La/Los/Las),
+    devuelve el nombre sin ese artículo. Si no aplica, devuelve None."""
+    partes = nombre.strip().split(" ", 1)
+    if len(partes) < 2:
+        return None
+    primera_palabra, resto = partes
+    if primera_palabra.lower() in ARTICULOS_INICIALES:
+        return resto.strip()
+    return None
+
+
+def generar_candidatos_slug(nombre):
+    """Genera la lista de slugs candidatos para el nombre del artista,
+    en orden de prioridad: primero el slug 'completo', y si el nombre
+    empieza con un artículo (El/La/Los/Las), también el slug sin ese
+    artículo, ya que lacuerda.net suele omitirlo en la URL."""
+    candidatos = [slugify_artista(nombre)]
+
+    nombre_sin_articulo = quitar_articulo_inicial(nombre)
+    if nombre_sin_articulo:
+        slug_sin_articulo = slugify_artista(nombre_sin_articulo)
+        if slug_sin_articulo not in candidatos:
+            candidatos.append(slug_sin_articulo)
+
+    return candidatos
+
+
+def extraer_nombre_artista(html_contenido):
+    """Busca <script>bName='Andrés Calamaro'</script> (o similar) en el HTML
+    y devuelve el nombre del artista, o None si no lo encuentra."""
+    match = re.search(r"bName\s*=\s*['\"]([^'\"]+)['\"]", html_contenido)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def pedir_datos_artista(html_contenido):
+    """Obtiene el nombre del artista: primero intenta detectarlo automáticamente
+    desde el propio lista.html (bName=...); si no lo encuentra, usa el argumento
+    de consola o lo pregunta por input. Deriva el slug de URL a partir del nombre."""
+    nombre = extraer_nombre_artista(html_contenido)
+
+    if nombre:
+        print(f"🎤 Artista detectado automáticamente en el HTML: '{nombre}'")
+    elif len(sys.argv) > 1:
+        nombre = " ".join(sys.argv[1:]).strip()
+    else:
+        nombre = input(
+            "No se encontró 'bName' en lista.html. "
+            "¿Nombre del artista (tal como querés que se llame la carpeta)? "
+        ).strip()
+
+    if not nombre:
+        print("❌ No se pudo determinar el nombre del artista. Abortando.")
+        sys.exit(1)
+
+    candidatos_slug = generar_candidatos_slug(nombre)
+    if len(candidatos_slug) > 1:
+        print(f"🌐 Slugs de URL candidatos (se probarán en orden): {candidatos_slug}")
+    else:
+        print(f"🌐 Slug de URL derivado: '{candidatos_slug[0]}'")
+
+    return nombre, candidatos_slug
+
+
+def parsear_versiones(lcd, slug, ruta_artista_url):
+    """
+    A partir del atributo lcd (ej: 'RRTKT-12534') y el slug de la canción,
+    devuelve una lista de tuplas (tipo_legible, url, sufijo) para cada versión.
+
+    El lcd tiene el formato "<letras>-<numeros>", donde cada posición i
+    empareja letras[i] (tipo de transcripción) con numeros[i] (el sufijo
+    que se usa en la URL: 1 = sin sufijo, 2 = "-2", 3 = "-3", etc).
+    """
+    versiones = []
+    if not lcd or "-" not in lcd:
+        # Formato inesperado: como fallback, asumimos una sola versión (acordes)
+        return [("Acordes", f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml", 1)]
+
+    letras, numeros = lcd.split("-", 1)
+    if len(letras) != len(numeros):
+        # No matchea 1 a 1, usamos fallback simple
+        return [("Acordes", f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml", 1)]
+
+    for letra, num in zip(letras, numeros):
+        try:
+            sufijo = int(num)
+        except ValueError:
+            continue
+        tipo = TIPOS.get(letra, letra)  # si aparece una letra nueva, se usa tal cual
+        sufijo_url = "" if sufijo == 1 else f"-{sufijo}"
+        url = f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}{sufijo_url}.shtml"
+        versiones.append((tipo, url, sufijo))
+
+    # Ordenamos por sufijo para que el nombre de archivo sea consistente
+    versiones.sort(key=lambda v: v[2])
+    return versiones
+
+
+def nombre_seguro(texto):
+    limpio = "".join(c for c in texto if c.isalnum() or c in (" ", "_", "-")).strip()
+    return re.sub(r"\s+", " ", limpio)
+
+
+def escribir_archivo_atomico(ruta_final, contenido):
+    """Escribe el contenido en un archivo temporal y recién al final lo
+    renombra a la ruta definitiva. Así, si el proceso se corta a mitad de
+    camino (corte de luz, kill -9, crash), nunca queda un .txt corrupto
+    a medio escribir que después el script confundiría con una canción
+    ya descargada correctamente."""
+    ruta_tmp = ruta_final + ".tmp"
+    with open(ruta_tmp, "w", encoding="utf-8") as archivo:
+        archivo.write(contenido)
+        archivo.flush()
+        os.fsync(archivo.fileno())
+    os.replace(ruta_tmp, ruta_final)
+
+
+def pedir_slug_manual(ruta_artista_url_actual):
+    """Le pide al usuario el tramo final de la URL del artista
+    (ej: 'bersuit' para https://acordes.lacuerda.net/bersuit/)."""
+    print(f"   URL probada: {DOMINIO_BASE}/{ruta_artista_url_actual}/ -> no existe (404)")
+    nuevo = input(
+        "   Ingresá manualmente el tramo de URL correcto del artista "
+        "(la parte entre lacuerda.net/ y la siguiente barra, ej: 'bersuit'): "
+    ).strip().strip("/")
+    return nuevo
+
+
+def probar_ruta_artista(ruta_candidata, slug_primera_cancion):
+    """Prueba una única ruta de artista contra la primera canción de la
+    lista. Devuelve True si responde 200, False en cualquier otro caso
+    (404, otro código, o fallo de conexión)."""
+    url_prueba = f"{DOMINIO_BASE}/{ruta_candidata}/{slug_primera_cancion}.shtml"
+    print(f"🔎 Verificando ruta de artista con: {url_prueba}")
+    try:
+        resp = requests.get(url_prueba, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f"   ❌ Fallo de conexión al verificar: {e}")
+        return False
+
+    if resp.status_code == 200:
+        print(f"   ✅ Ruta de artista válida: '{ruta_candidata}'")
+        return True
+
+    print(f"   ⚠️ La ruta '{ruta_candidata}' no funcionó (código: {resp.status_code}).")
+    return False
+
+
+def resolver_ruta_artista(candidatos_slug, slug_primera_cancion):
+    """Recibe la lista de rutas candidatas para el artista (ej: el slug
+    completo y, si aplica, el slug sin el artículo inicial El/La/Los/Las)
+    y las prueba en orden contra la primera canción de la lista.
+
+    Si ninguna funciona, corta el recorrido, pide por teclado el tramo
+    correcto de la URL y reintenta hasta encontrar una ruta válida (o
+    hasta que el usuario cancele)."""
+    for candidato in candidatos_slug:
+        if probar_ruta_artista(candidato, slug_primera_cancion):
+            return candidato
+
+    # Ninguno de los candidatos automáticos funcionó: pedimos manualmente
+    ruta_actual = candidatos_slug[-1]
+    while True:
+        nuevo = pedir_slug_manual(ruta_actual)
+        if not nuevo:
+            print("   ❌ No se ingresó ninguna ruta. Abortando.")
+            sys.exit(1)
+
+        if probar_ruta_artista(nuevo, slug_primera_cancion):
+            return nuevo
+
+        ruta_actual = nuevo
+        print(f"   🔁 Reintentando el recorrido de {ARCHIVO_HTML_LOCAL} con la nueva ruta: '{ruta_actual}'")
+
+
+def cargar_lista_html():
+    """Lee ARCHIVO_HTML_LOCAL desde el directorio actual. Devuelve el
+    contenido como string, o None (y un mensaje de error) si no existe."""
+    if not os.path.exists(ARCHIVO_HTML_LOCAL):
+        print(f"❌ Error: No se encuentra el archivo '{ARCHIVO_HTML_LOCAL}' en esta carpeta.")
+        return None
+
+    with open(ARCHIVO_HTML_LOCAL, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def parsear_canciones_html(html_contenido):
+    """A partir del contenido de lista.html, devuelve un diccionario
+    slug -> (titulo, lcd) con las canciones únicas encontradas."""
+    soup = BeautifulSoup(html_contenido, "html.parser")
+    elementos_lista = soup.find_all("li")
+
+    # slug -> (titulo, lcd)  -> deduplicado, porque a veces el sitio
+    # repite el mismo href en dos <li> distintos con títulos ligeramente distintos
+    canciones = {}
+    for li in elementos_lista:
+        enlace = li.find("a")
+        if not enlace:
+            continue
+        slug = enlace.get("href", "").strip()
+        if not slug:
+            continue
+        # El texto del <a> incluye "acordes"/"tablatura" dentro de un <em>; lo quitamos
+        em = enlace.find("em")
+        texto_titulo = enlace.text.strip()
+        if em:
+            texto_titulo = texto_titulo.replace(em.text.strip(), "").strip()
+
+        lcd = li.get("lcd", "")
+
+        if slug not in canciones:
+            canciones[slug] = (texto_titulo, lcd)
+
+    return canciones
+
+
+def contar_descargas_artista(nombre_artista):
+    """Cuenta cuántos archivos .txt hay ya descargados en la carpeta de
+    destino de un artista. Devuelve (cantidad, ruta_carpeta)."""
+    ruta_carpeta = os.path.join(CARPETA_PRINCIPAL, nombre_artista.replace(" ", "_"))
+    if not os.path.isdir(ruta_carpeta):
+        return 0, ruta_carpeta
+    cantidad = len([f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")])
+    return cantidad, ruta_carpeta
+
+
+def verificar_lista_html():
+    """Chequeo de solo lectura, sin descargar nada: reporta qué artista
+    detecta en el lista.html actual, cuántas canciones únicas encuentra,
+    qué slugs de URL candidatos generaría, y prueba esos candidatos contra
+    el servidor para avisar si alguno responde. Útil para revisar el
+    archivo antes de lanzar la descarga completa."""
+    print("--- VERIFICANDO lista.html ---")
+
+    html_contenido = cargar_lista_html()
+    if html_contenido is None:
+        return
+
+    nombre_artista, candidatos_slug = pedir_datos_artista(html_contenido)
+    canciones = parsear_canciones_html(html_contenido)
+
+    print(f"🎵 Canciones únicas encontradas: {len(canciones)}")
+    if not canciones:
+        print("❌ El lista.html no parece tener canciones. Revisá que sea el archivo correcto.")
+        return
+
+    descargadas, ruta_carpeta = contar_descargas_artista(nombre_artista)
+    print(f"📁 Carpeta de destino: {ruta_carpeta}")
+    print(f"   Archivos ya descargados ahí: {descargadas}")
+
+    print("\n🔎 Probando conectividad de los slugs candidatos (sin descargar canciones)...")
+    primer_slug = next(iter(canciones))
+    ruta_valida = None
+    for candidato in candidatos_slug:
+        if probar_ruta_artista(candidato, primer_slug):
+            ruta_valida = candidato
+            break
+
+    if ruta_valida:
+        print(f"\n✅ Todo listo: la ruta '{ruta_valida}' responde correctamente.")
+        print(f"   URLs se armarían como: {DOMINIO_BASE}/{ruta_valida}/<cancion>.shtml")
+    else:
+        print("\n⚠️ Ninguno de los slugs candidatos respondió con éxito.")
+        print("   Al lanzar la descarga completa vas a poder ingresar la ruta correcta a mano.")
+
+
+def procesar_biblioteca_completa():
+    print("--- INICIANDO SCRIPT (con soporte multi-versión) ---")
+
+    html_contenido = cargar_lista_html()
+    if html_contenido is None:
+        return
+
+    nombre_artista, candidatos_slug = pedir_datos_artista(html_contenido)
+
+    ruta_carpeta = os.path.join(CARPETA_PRINCIPAL, nombre_artista.replace(" ", "_"))
+    os.makedirs(ruta_carpeta, exist_ok=True)
+    print(f"📁 Carpeta de destino: {ruta_carpeta}")
+
+    canciones = parsear_canciones_html(html_contenido)
+
+    print(f"¡Éxito! Se identificaron {len(canciones)} canciones únicas.")
+
+    if not canciones:
+        print("❌ No se encontraron canciones en el lista.html. Abortando.")
+        return
+
+    # --- Validamos que la ruta de artista sea correcta antes de lanzar la ---
+    # descarga masiva. Probamos en orden los slugs candidatos (el completo y,
+    # si aplica, el slug sin el artículo inicial El/La/Los/Las) contra la
+    # primera canción de la lista; si ninguno funciona, pedimos el tramo de
+    # URL correcto por teclado.
+    primer_slug = next(iter(canciones))
+    ruta_artista_url = resolver_ruta_artista(candidatos_slug, primer_slug)
+    print(f"🌐 URLs se armarán como: {DOMINIO_BASE}/{ruta_artista_url}/<cancion>.shtml")
+
+    descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista)
+
+
+TIMEOUT_SEGUNDOS = 15
+TIMEOUT_SEGUNDOS_REINTENTO = 25  # un poco más generoso para la segunda pasada
 
 
 def mensaje_amigable_error(excepcion):
+    """Traduce una excepción de red a un mensaje corto y entendible para
+    el usuario, en vez de mostrar el texto crudo de la excepción."""
     if isinstance(excepcion, requests.exceptions.Timeout):
         return "el servidor tardó demasiado en responder"
     if isinstance(excepcion, requests.exceptions.ConnectionError):
@@ -116,16 +402,14 @@ def mensaje_amigable_error(excepcion):
 
 
 def es_error_reintentable(excepcion):
-    return isinstance(
-        excepcion,
-        (requests.exceptions.Timeout, requests.exceptions.ConnectionError),
-    )
+    """Timeouts y errores de conexión son transitorios: vale la pena
+    reintentarlos al final del recorrido en vez de darlos por perdidos."""
+    return isinstance(excepcion, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
 
 
 MENSAJES_POR_CODIGO = {
     403: "acceso rechazado por el servidor",
     404: "la página no existe",
-    429: "demasiadas solicitudes; el servidor pidió esperar",
     500: "error interno del servidor",
     502: "servidor no disponible momentáneamente",
     503: "servicio no disponible en este momento",
@@ -134,412 +418,79 @@ MENSAJES_POR_CODIGO = {
 
 
 def mensaje_amigable_codigo(codigo):
-    return MENSAJES_POR_CODIGO.get(codigo, f"respuesta HTTP {codigo}")
-
-
-def esperar():
-    if ESPERA_ENTRE_PETICIONES > 0:
-        time.sleep(ESPERA_ENTRE_PETICIONES)
-
-
-# ---------------------------------------------------------------------------
-# Utilidades
-# ---------------------------------------------------------------------------
-
-def nombre_seguro(texto):
-    limpio = "".join(
-        c for c in texto if c.isalnum() or c in (" ", "_", "-", ".")
-    ).strip()
-    limpio = re.sub(r"\s+", " ", limpio)
-    return limpio or "Sin_nombre"
-
-
-def slugify_artista(nombre):
-    con_ni = nombre.replace("ñ", "ni").replace("Ñ", "Ni")
-    sin_tildes = unicodedata.normalize("NFKD", con_ni)
-    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
-    slug = re.sub(r"[^a-z0-9]+", "_", sin_tildes.lower().strip())
-    return slug.strip("_")
-
-
-def escribir_json_atomico(ruta, datos):
-    ruta_tmp = ruta + ".tmp"
-    with open(ruta_tmp, "w", encoding="utf-8") as f:
-        json.dump(datos, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(ruta_tmp, ruta)
-
-
-def escribir_texto_atomico(ruta, contenido):
-    ruta_tmp = ruta + ".tmp"
-    with open(ruta_tmp, "w", encoding="utf-8") as f:
-        f.write(contenido)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(ruta_tmp, ruta)
-
-
-def escribir_archivo_atomico(ruta_final, contenido):
-    escribir_texto_atomico(ruta_final, contenido)
-
-
-# ---------------------------------------------------------------------------
-# Control / salida
-# ---------------------------------------------------------------------------
-
-def nuevo_estado(letra):
-    """Crea el estado independiente de una única letra."""
-    return {
-        "version": "5.2",
-        "fuente": f"{URL_TABS}/{quote(letra)}/",
-        "letra": letra,
-        "inicio": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "fin": None,
-        "paginas_indice": [],
-        "artistas": [],
-        "errores": [],
-        "resumen": {
-            "paginas_indice": 0,
-            "artistas_encontrados": 0,
-            "artistas_procesados": 0,
-            "canciones_encontradas": 0,
-            "versiones_descargadas": 0,
-            "versiones_omitidas": 0,
-            "versiones_fallidas": 0,
-        },
-    }
-
-
-def cargar_estado_letra(letra):
-    """Carga el JSON de una letra si existe y todavía sirve como control parcial."""
-    ruta = os.path.join(carpeta_letra(letra), ARCHIVO_JSON)
-    if not os.path.exists(ruta):
-        return None
-    try:
-        with open(ruta, "r", encoding="utf-8") as f:
-            estado = json.load(f)
-        if estado.get("letra") != letra:
-            return None
-        return estado
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def construir_txt_control(estado):
-    r = estado["resumen"]
-    lineas = [
-        "LaCuerda Downloader v5.2 - CONTROL",
-        "=" * 70,
-        f"Letra: {estado['letra'].upper()}",
-        f"Fuente: {estado['fuente']}",
-        f"Inicio: {estado['inicio']}",
-        f"Fin: {estado.get('fin') or 'EN CURSO / INTERRUMPIDO'}",
-        "",
-        "RESUMEN",
-        "-" * 70,
-        f"Páginas de índice:       {r['paginas_indice']}",
-        f"Artistas encontrados:    {r['artistas_encontrados']}",
-        f"Artistas procesados:     {r['artistas_procesados']}",
-        f"Canciones encontradas:   {r['canciones_encontradas']}",
-        f"Versiones descargadas:   {r['versiones_descargadas']}",
-        f"Versiones omitidas:      {r['versiones_omitidas']}",
-        f"Versiones fallidas:      {r['versiones_fallidas']}",
-        "",
-        "ARTISTAS",
-        "=" * 70,
-    ]
-
-    for artista in estado["artistas"]:
-        lineas.append(f"\n{artista['nombre']}")
-        lineas.append(f"URL: {artista['url']}")
-        lineas.append(
-            f"Canciones: {len(artista.get('canciones', []))}"
-            f" / declaradas: {artista.get('canciones_declaradas', '?')}"
-        )
-        if artista.get("error"):
-            lineas.append(f"ERROR: {artista['error']}")
-        for cancion in artista.get("canciones", []):
-            lcd = cancion.get("lcd") or "-"
-            lineas.append(f"  - {cancion['titulo']} [{lcd}]")
-
-    if estado["errores"]:
-        lineas.extend(["", "ERRORES", "=" * 70])
-        for error in estado["errores"]:
-            lineas.append(f"[{error.get('tipo', 'ERROR')}] {error.get('url', '')}")
-            lineas.append(f"  {error.get('mensaje', '')}")
-
-    return "\n".join(lineas) + "\n"
-
-
-def guardar_control(estado):
-    """Guarda JSON y TXT dentro de la carpeta exclusiva de la letra."""
-    carpeta = carpeta_letra(estado["letra"])
-    os.makedirs(carpeta, exist_ok=True)
-    escribir_json_atomico(os.path.join(carpeta, ARCHIVO_JSON), estado)
-    escribir_texto_atomico(os.path.join(carpeta, ARCHIVO_TXT), construir_txt_control(estado))
-
-
-# ---------------------------------------------------------------------------
-# Índices alfabéticos
-# ---------------------------------------------------------------------------
-
-def url_indice(letra, offset=0):
-    return f"{URL_TABS}/{quote(letra)}/index{offset}.html"
-
-
-def extraer_paginas_indice(html, letra):
-    """Obtiene indexXXX.html desde .multipag, incluyendo la página actual."""
-    soup = BeautifulSoup(html, "html.parser")
-    paginas = {0}
-    bloque = soup.find("div", class_="multipag")
-
-    if bloque:
-        for li in bloque.find_all("li"):
-            onclick = li.get("onclick", "")
-            match = re.search(r"index(\d+)\.html", onclick)
-            if match:
-                paginas.add(int(match.group(1)))
-
-        for enlace in bloque.find_all("a", href=True):
-            match = re.search(r"index(\d+)\.html", enlace["href"])
-            if match:
-                paginas.add(int(match.group(1)))
-
-    return sorted(paginas)
-
-
-def extraer_artistas_indice(html, letra):
-    soup = BeautifulSoup(html, "html.parser")
-    ul = soup.find("ul", id="i_main")
-    if not ul:
-        return []
-
-    artistas = []
-    for li in ul.find_all("li", recursive=False):
-        enlace = li.find("a", href=True)
-        if not enlace:
-            continue
-
-        href = enlace["href"].strip()
-        if not href:
-            continue
-
-        nombre = enlace.get_text(" ", strip=True)
-        em = enlace.find("em")
-        if em:
-            nombre = nombre.replace(em.get_text(" ", strip=True), "").strip()
-
-        span = li.find("span")
-        declaradas = None
-        if span:
-            match = re.search(r"\d+", span.get_text(" ", strip=True))
-            if match:
-                declaradas = int(match.group(0))
-
-        artistas.append({
-            "nombre": nombre,
-            "url": urljoin(DOMINIO_BASE, href),
-            "letra_indice": letra,
-            "canciones_declaradas": declaradas,
-            "canciones": [],
-        })
-
-    return artistas
-
-
-def obtener_indice(session, letra, offset):
-    url = url_indice(letra, offset)
-    print(f"   📑 Índice: {url}")
-    try:
-        respuesta = obtener(session, url)
-    except Exception as e:
-        return None, {
-            "tipo": "indice_conexion",
-            "url": url,
-            "mensaje": mensaje_amigable_error(e),
-        }
-
-    if respuesta.status_code != 200:
-        return None, {
-            "tipo": "indice_http",
-            "url": url,
-            "mensaje": mensaje_amigable_codigo(respuesta.status_code),
-        }
-
-    return respuesta.text, None
-
-
-# ---------------------------------------------------------------------------
-# Artistas y canciones
-# ---------------------------------------------------------------------------
-
-def extraer_canciones_artista(html, url_artista):
-    soup = BeautifulSoup(html, "html.parser")
-    ul = soup.find("ul", id="b_main")
-    if not ul:
-        return []
-
-    canciones = []
-    vistos = set()
-
-    for li in ul.find_all("li", recursive=False):
-        enlace = li.find("a", href=True)
-        if not enlace:
-            continue
-
-        href = enlace["href"].strip()
-        if not href:
-            continue
-
-        titulo = enlace.get_text(" ", strip=True)
-        em = enlace.find("em")
-        if em:
-            titulo = titulo.replace(em.get_text(" ", strip=True), "").strip()
-
-        clave = (href, titulo)
-        if clave in vistos:
-            continue
-        vistos.add(clave)
-
-        canciones.append({
-            "id": li.get("id", ""),
-            "titulo": titulo,
-            "href": href,
-            "url": urljoin(url_artista.rstrip("/") + "/", href),
-            "lcd": li.get("lcd", ""),
-        })
-
-    return canciones
-
-
-def normalizar_slug_cancion(href):
-    path = urlparse(href).path
-    slug = path.rstrip("/").split("/")[-1]
-    slug = re.sub(r"\.shtml$", "", slug, flags=re.IGNORECASE)
-    return slug
-
-
-def parsear_versiones(lcd, slug, ruta_artista_url):
-    versiones = []
-    if not lcd or "-" not in lcd:
-        return [
-            (
-                "Acordes",
-                f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml",
-                1,
-            )
-        ]
-
-    letras, numeros = lcd.split("-", 1)
-    if len(letras) != len(numeros):
-        return [
-            (
-                "Acordes",
-                f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}.shtml",
-                1,
-            )
-        ]
-
-    for letra, numero in zip(letras, numeros):
-        try:
-            sufijo = int(numero)
-        except ValueError:
-            continue
-
-        tipo = TIPOS.get(letra, letra)
-        sufijo_url = "" if sufijo == 1 else f"-{sufijo}"
-        url = f"{DOMINIO_BASE}/{ruta_artista_url}/{slug}{sufijo_url}.shtml"
-        versiones.append((tipo, url, sufijo))
-
-    versiones.sort(key=lambda x: x[2])
-    return versiones
-
-
-def ruta_artista_desde_url(url):
-    path = urlparse(url).path.strip("/")
-    return path.split("/")[-1] if path else ""
-
-
-def descargar_pagina_artista(session, artista):
-    url = artista["url"]
-    print(f"   🎤 {artista['nombre']} -> {url}")
-
-    try:
-        respuesta = obtener(session, url)
-    except Exception as e:
-        return None, mensaje_amigable_error(e)
-
-    if respuesta.status_code != 200:
-        return None, mensaje_amigable_codigo(respuesta.status_code)
-
-    return respuesta.text, None
-
-
-# ---------------------------------------------------------------------------
-# Descarga de canciones
-# ---------------------------------------------------------------------------
-
-def guardar_version_si_corresponde(
-    res_tab,
-    nombre_artista,
-    titulo,
-    etiqueta,
-    url_version,
-    ruta_final_txt,
-    nombre_archivo,
-):
+    """Traduce un código HTTP a un mensaje corto y entendible para el
+    usuario, en vez de mostrar solo el número de código."""
+    return MENSAJES_POR_CODIGO.get(codigo, "el servidor rechazó la solicitud")
+
+
+def guardar_version_si_corresponde(res_tab, nombre_artista, titulo, etiqueta, url_version, ruta_final_txt, nombre_archivo):
+    """A partir de una respuesta 200, busca el bloque de tablatura/acordes
+    y lo guarda de forma atómica. Devuelve True si se descargó y guardó
+    correctamente, False si la página no traía el texto esperado."""
     soup_cancion = BeautifulSoup(res_tab.text, "html.parser")
-    div_contenedor = soup_cancion.find("div", id=["tbody", "t_body"])
-    bloque_tablatura = (
-        div_contenedor.find("pre") if div_contenedor else soup_cancion.find("pre")
-    )
 
+    # 1. Buscamos el div principal.
+    # Pasamos una lista con "tbody" y "t_body" para cubrir cualquier variante en la web
+    div_contenedor = soup_cancion.find("div", id=["tbody", "t_body"])
+
+    # 2. Buscamos el <pre> dentro de ese div.
+    # Si la web no tuviera el div por alguna razón, hacemos un fallback buscando cualquier <pre>
+    if div_contenedor:
+        bloque_tablatura = div_contenedor.find("pre")
+    else:
+        bloque_tablatura = soup_cancion.find("pre")
+
+    # 3. Verificamos que se haya encontrado y que contenga texto real
     if not (bloque_tablatura and bloque_tablatura.text.strip()):
-        print(f"         ⚠️ No se encontró el texto en {url_version}")
+        print(f"         ⚠️ No se encontró el texto de la canción en {url_version}")
         return False
+
+    # Al usar .text, BeautifulSoup descarta las etiquetas <div> y <a> internas,
+    # pero mantiene intactos los espacios y la alineación de los acordes.
+    texto_tablatura = bloque_tablatura.text
 
     contenido = (
         f"ARTISTA: {nombre_artista}\n"
         f"CANCION: {titulo}\n"
         f"VERSION: {etiqueta}\n"
         f"URL: {url_version}\n"
-        + "=" * 40
-        + "\n\n"
-        + bloque_tablatura.text
+        + "=" * 40 + "\n\n"
+        + texto_tablatura
     )
     escribir_archivo_atomico(ruta_final_txt, contenido)
+
     print(f"         ✅ ¡Descargada! -> {nombre_archivo}")
     return True
 
 
-def descargar_canciones_artista(
-    session,
-    artista,
-    ruta_carpeta,
-    estado,
-):
-    nombre_artista = artista["nombre"]
-    ruta_artista_url = ruta_artista_desde_url(artista["url"])
-    canciones = artista.get("canciones", [])
-    pendientes = []
+def descargar_canciones(canciones, ruta_artista_url, ruta_carpeta, nombre_artista):
+    """Recorre las canciones y descarga cada versión. Si detecta un 404 en el
+    primer intento real de descarga (posible indicio de que la ruta de
+    artista sigue siendo incorrecta pese a la validación previa), corta el
+    recorrido, pide el tramo de URL correcto por teclado y reinicia todo
+    el recorrido de lista.html con la ruta corregida.
 
-    os.makedirs(ruta_carpeta, exist_ok=True)
+    Las versiones que tardan demasiado en responder (timeout) o fallan por
+    un problema de conexión transitorio no se dan por perdidas: se guardan
+    en una cola y se reintentan una vez más al terminar todo el recorrido."""
+    total_versiones_descargadas = 0
+    total_versiones_omitidas = 0
+    intentos_reales = 0
+    pendientes_reintento = []
 
-    for i, cancion in enumerate(canciones, start=1):
-        if SE_PIDIO_DETENER:
-            break
+    for i, (slug, (titulo, lcd)) in enumerate(canciones.items(), start=1):
+        versiones = parsear_versiones(lcd, slug, ruta_artista_url)
+        base_nombre = nombre_seguro(titulo)
 
-        slug = normalizar_slug_cancion(cancion["href"])
-        versiones = parsear_versiones(cancion.get("lcd", ""), slug, ruta_artista_url)
-        base_nombre = nombre_seguro(cancion["titulo"])
-        conteo_tipos = Counter(tipo for tipo, _, _ in versiones)
+        # Si hay más de una versión del mismo tipo (ej: dos "Acordes"),
+        # les agregamos un contador para no pisarse entre archivos
+        conteo_tipos = {}
+        for tipo, _, _ in versiones:
+            conteo_tipos[tipo] = conteo_tipos.get(tipo, 0) + 1
+
         contador_actual = {}
 
-        print(
-            f"      [{i}/{len(canciones)}] {cancion['titulo']} "
-            f"({len(versiones)} versión/es)"
-        )
+        print(f"[{i}/{len(canciones)}] {titulo}  ({len(versiones)} versión/es: {[t for t,_,_ in versiones]})")
 
         for tipo, url_version, sufijo in versiones:
             if conteo_tipos[tipo] > 1:
@@ -552,313 +503,98 @@ def descargar_canciones_artista(
             ruta_final_txt = os.path.join(ruta_carpeta, nombre_archivo)
 
             if os.path.exists(ruta_final_txt):
-                estado["resumen"]["versiones_omitidas"] += 1
+                total_versiones_omitidas += 1
                 continue
 
-            print(f"         🔗 [{tipo}] {url_version}")
-            esperar()
+            print(f"      🔗 [{tipo}] {url_version}")
+            time.sleep(2)
 
             try:
-                respuesta = obtener(session, url_version)
+                res_tab = requests.get(url_version, headers=HEADERS, timeout=TIMEOUT_SEGUNDOS)
             except Exception as e:
                 if es_error_reintentable(e):
-                    pendientes.append({
-                        "artista": nombre_artista,
-                        "titulo": cancion["titulo"],
+                    print(f"         ⏱️ {mensaje_amigable_error(e)}. Se reintentará al final del recorrido.")
+                    pendientes_reintento.append({
+                        "titulo": titulo,
                         "etiqueta": etiqueta,
-                        "url": url_version,
-                        "ruta": ruta_final_txt,
-                        "archivo": nombre_archivo,
+                        "url_version": url_version,
+                        "ruta_final_txt": ruta_final_txt,
+                        "nombre_archivo": nombre_archivo,
                     })
                 else:
-                    estado["resumen"]["versiones_fallidas"] += 1
-                    estado["errores"].append({
-                        "tipo": "cancion_conexion",
-                        "url": url_version,
-                        "mensaje": mensaje_amigable_error(e),
-                    })
+                    print(f"         ❌ {mensaje_amigable_error(e)}.")
+
+                if SE_PIDIO_DETENER:
+                    break
                 continue
 
-            if respuesta.status_code == 200:
-                if guardar_version_si_corresponde(
-                    respuesta,
-                    nombre_artista,
-                    cancion["titulo"],
-                    etiqueta,
-                    url_version,
-                    ruta_final_txt,
-                    nombre_archivo,
-                ):
-                    estado["resumen"]["versiones_descargadas"] += 1
-                else:
-                    estado["resumen"]["versiones_fallidas"] += 1
+            if res_tab.status_code == 404 and intentos_reales == 0:
+                # Primer intento real de descarga y da 404: cortamos el
+                # recorrido, pedimos la ruta correcta y reiniciamos todo
+                # el recorrido de lista.html desde cero con esa ruta.
+                print("         ⚠️ 404 en el primer intento real. La ruta de artista sigue mal.")
+                nueva_ruta = pedir_slug_manual(ruta_artista_url)
+                if not nueva_ruta:
+                    print("         ❌ No se ingresó ninguna ruta. Abortando.")
+                    sys.exit(1)
+                print(f"         🔁 Reiniciando el recorrido de {ARCHIVO_HTML_LOCAL} con la ruta '{nueva_ruta}'...")
+                return descargar_canciones(canciones, nueva_ruta, ruta_carpeta, nombre_artista)
+
+            intentos_reales += 1
+
+            if res_tab.status_code == 200:
+                if guardar_version_si_corresponde(res_tab, nombre_artista, titulo, etiqueta, url_version, ruta_final_txt, nombre_archivo):
+                    total_versiones_descargadas += 1
             else:
-                estado["resumen"]["versiones_fallidas"] += 1
-                estado["errores"].append({
-                    "tipo": "cancion_http",
-                    "url": url_version,
-                    "mensaje": mensaje_amigable_codigo(respuesta.status_code),
-                })
+                print(f"         ⚠️ No se pudo obtener esta versión: {mensaje_amigable_codigo(res_tab.status_code)}.")
 
             if SE_PIDIO_DETENER:
+                # Terminamos el ítem actual de forma completa (ya escrito de
+                # forma atómica arriba) y cortamos acá, antes de arrancar
+                # una nueva descarga.
                 break
 
-    if pendientes and not SE_PIDIO_DETENER:
-        print(f"      🔁 Reintentando {len(pendientes)} versión/es...")
-        for item in pendientes:
-            if SE_PIDIO_DETENER:
-                break
-            time.sleep(ESPERA_ENTRE_REINTENTOS)
-            try:
-                respuesta = obtener(session, item["url"], timeout=TIMEOUT_REINTENTO)
-            except Exception as e:
-                estado["resumen"]["versiones_fallidas"] += 1
-                estado["errores"].append({
-                    "tipo": "reintento",
-                    "url": item["url"],
-                    "mensaje": mensaje_amigable_error(e),
-                })
-                continue
-
-            if respuesta.status_code == 200 and guardar_version_si_corresponde(
-                respuesta,
-                item["artista"],
-                item["titulo"],
-                item["etiqueta"],
-                item["url"],
-                item["ruta"],
-                item["archivo"],
-            ):
-                estado["resumen"]["versiones_descargadas"] += 1
-            else:
-                estado["resumen"]["versiones_fallidas"] += 1
-
-
-def contar_descargas_artista(nombre_artista):
-    ruta = os.path.join(CARPETA_PRINCIPAL, nombre_artista.replace(" ", "_"))
-    if not os.path.isdir(ruta):
-        return 0, ruta
-    cantidad = sum(1 for f in os.listdir(ruta) if f.lower().endswith(".txt"))
-    return cantidad, ruta
-
-
-# ---------------------------------------------------------------------------
-# Recorrido principal
-# ---------------------------------------------------------------------------
-
-def pedir_letra():
-    """Solicita una única letra del índice alfabético."""
-    while True:
-        letra = input("Ingresá la letra que querés scrapear (A-Z): ").strip().lower()
-        if letra in LETRAS:
-            return letra
-        print("⚠️ Letra inválida. Ingresá una letra entre A y Z.")
-
-
-def recalcular_resumen(estado):
-    """Recalcula los contadores derivados a partir del contenido de la letra."""
-    estado["resumen"]["artistas_encontrados"] = len(estado["artistas"])
-    estado["resumen"]["canciones_encontradas"] = sum(
-        len(a.get("canciones", [])) for a in estado["artistas"]
-    )
-
-
-def procesar_letra(letra=None):
-    """Recorre exclusivamente una letra y guarda todo dentro de su carpeta."""
-    global SE_PIDIO_DETENER
-    SE_PIDIO_DETENER = False
-
-    if letra is None:
-        letra = pedir_letra()
-
-    ruta_letra = carpeta_letra(letra)
-    os.makedirs(ruta_letra, exist_ok=True)
-
-    print(f"--- LaCuerda Downloader v5.2 | LETRA {letra.upper()} ---")
-    print(f"📁 Carpeta de trabajo: {ruta_letra}")
-    print("🔗 Se utilizará UNA sesión HTTP reutilizable para toda esta letra.")
-    print(f"⏱️ Espera entre peticiones: {ESPERA_ENTRE_PETICIONES}s")
-
-    estado = cargar_estado_letra(letra) or nuevo_estado(letra)
-    estado["fin"] = None
-    session = crear_sesion()
-
-    # El JSON existente permite continuar un recorrido interrumpido sin perder
-    # los artistas ya descubiertos. Para una actualización futura de la letra,
-    # se vuelve a consultar el índice y se agregan/corrigen artistas.
-    artistas_por_url = {a["url"].rstrip("/"): a for a in estado.get("artistas", [])}
-    offsets_vistos = set(estado.get("paginas_indice", []))
-    pagina_offsets = [0]
-    paginas_procesadas_en_esta_ejecucion = set()
-
-    print("\n========== ÍNDICES ==========")
-    while pagina_offsets and not SE_PIDIO_DETENER:
-        offset = pagina_offsets.pop(0)
-        if offset in paginas_procesadas_en_esta_ejecucion:
-            continue
-        paginas_procesadas_en_esta_ejecucion.add(offset)
-
-        esperar()
-        html, error = obtener_indice(session, letra, offset)
-
-        if offset not in estado["paginas_indice"]:
-            estado["paginas_indice"].append(offset)
-            estado["paginas_indice"].sort()
-        estado["resumen"]["paginas_indice"] = len(estado["paginas_indice"])
-
-        if error:
-            estado["errores"].append(error)
-            guardar_control(estado)
-            continue
-
-        nuevos_offsets = extraer_paginas_indice(html, letra)
-        for nuevo in nuevos_offsets:
-            if nuevo not in paginas_procesadas_en_esta_ejecucion and nuevo not in pagina_offsets:
-                pagina_offsets.append(nuevo)
-
-        artistas = extraer_artistas_indice(html, letra)
-        print(f"      👥 Artistas encontrados en esta página: {len(artistas)}")
-
-        for artista in artistas:
-            clave = artista["url"].rstrip("/")
-            if clave in artistas_por_url:
-                # Actualizamos datos básicos del índice, pero conservamos las
-                # canciones ya descubiertas durante una ejecución anterior.
-                existente = artistas_por_url[clave]
-                existente["nombre"] = artista["nombre"]
-                existente["letra_indice"] = artista["letra_indice"]
-                existente["canciones_declaradas"] = artista["canciones_declaradas"]
-            else:
-                artistas_por_url[clave] = artista
-                estado["artistas"].append(artista)
-
-        recalcular_resumen(estado)
-        guardar_control(estado)
-
-    print(f"\n👥 Total de artistas de {letra.upper()}: {len(estado['artistas'])}")
-
-    print("\n========== ARTISTAS ==========")
-    for numero, artista in enumerate(estado["artistas"], start=1):
         if SE_PIDIO_DETENER:
             break
 
-        print(f"\n[{numero}/{len(estado['artistas'])}] {artista['nombre']}")
-        esperar()
-        html, error = descargar_pagina_artista(session, artista)
+    total_versiones_fallidas = 0
+    if pendientes_reintento and not SE_PIDIO_DETENER:
+        print(f"\n--- REINTENTANDO {len(pendientes_reintento)} VERSIÓN/ES QUE TARDARON DEMASIADO ---")
+        for item in pendientes_reintento:
+            if SE_PIDIO_DETENER:
+                total_versiones_fallidas += 1
+                continue
 
-        if error:
-            artista["error"] = error
-            estado["errores"].append({
-                "tipo": "artista",
-                "url": artista["url"],
-                "mensaje": error,
-            })
-            guardar_control(estado)
-            continue
+            print(f"   🔁 Reintentando: {item['titulo']} [{item['etiqueta']}]")
+            time.sleep(2)
 
-        artista.pop("error", None)
-        artista["canciones"] = extraer_canciones_artista(html, artista["url"])
-        artista["canciones_encontradas"] = len(artista["canciones"])
+            try:
+                res_tab = requests.get(item["url_version"], headers=HEADERS, timeout=TIMEOUT_SEGUNDOS_REINTENTO)
+            except Exception as e:
+                print(f"      ❌ {mensaje_amigable_error(e)}. Se descarta esta versión por ahora.")
+                total_versiones_fallidas += 1
+                continue
 
-        if (
-            artista.get("canciones_declaradas") is not None
-            and artista["canciones_declaradas"] != len(artista["canciones"])
-        ):
-            artista["advertencia_cantidad"] = (
-                f"La página declara {artista['canciones_declaradas']} "
-                f"y se encontraron {len(artista['canciones'])}."
-            )
-        else:
-            artista.pop("advertencia_cantidad", None)
+            if res_tab.status_code == 200:
+                if guardar_version_si_corresponde(
+                    res_tab, nombre_artista, item["titulo"], item["etiqueta"],
+                    item["url_version"], item["ruta_final_txt"], item["nombre_archivo"],
+                ):
+                    total_versiones_descargadas += 1
+                else:
+                    total_versiones_fallidas += 1
+            else:
+                print(f"      ⚠️ {mensaje_amigable_codigo(res_tab.status_code)}.")
+                total_versiones_fallidas += 1
 
-        ruta_artista = os.path.join(
-            ruta_letra,
-            nombre_seguro(artista["nombre"]).replace(" ", "_"),
-        )
-        artista["carpeta"] = ruta_artista
-
-        estado["resumen"]["artistas_procesados"] = sum(
-            1 for a in estado["artistas"] if "canciones" in a and not a.get("error")
-        )
-        recalcular_resumen(estado)
-        guardar_control(estado)
-
-        descargar_canciones_artista(session, artista, ruta_artista, estado)
-        guardar_control(estado)
-
-    estado["fin"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    recalcular_resumen(estado)
-    guardar_control(estado)
-
-    print("\n========== RESUMEN ==========")
-    for clave, valor in estado["resumen"].items():
-        print(f"{clave}: {valor}")
-
+    print("\n--- RESUMEN ---")
     if SE_PIDIO_DETENER:
-        print("\n⏸️ Letra detenida. El JSON/TXT conserva el avance parcial.")
-    else:
-        print(f"\n✅ Letra {letra.upper()} terminada.")
-
-    print(f"📁 Carpeta: {ruta_letra}")
-    print(f"📄 JSON: {os.path.join(ruta_letra, ARCHIVO_JSON)}")
-    print(f"📄 TXT:  {os.path.join(ruta_letra, ARCHIVO_TXT)}")
-
-
-def procesar_biblioteca_completa():
-    """Compatibilidad: ahora solicita una letra y procesa solamente esa letra."""
-    procesar_letra()
-
-
-def verificar_indice_a():
-    """Verifica una letra seleccionada: índice y primer artista."""
-    letra = pedir_letra()
-    session = crear_sesion()
-    print(f"--- VERIFICACIÓN v5.2 | LETRA {letra.upper()} ---")
-
-    url = url_indice(letra, 0)
-    print(f"🔎 {url}")
-    try:
-        respuesta = obtener(session, url)
-    except Exception as e:
-        print(f"❌ {mensaje_amigable_error(e)}")
-        return
-
-    if respuesta.status_code != 200:
-        print(f"❌ {mensaje_amigable_codigo(respuesta.status_code)}")
-        return
-
-    offsets = extraer_paginas_indice(respuesta.text, letra)
-    artistas = extraer_artistas_indice(respuesta.text, letra)
-
-    print("✅ Página índice responde 200")
-    print(f"📑 Páginas detectadas: {offsets}")
-    print(f"👥 Artistas en index0: {len(artistas)}")
-
-    if artistas:
-        primero = artistas[0]
-        print(f"🎤 Primer artista: {primero['nombre']}")
-        print(f"🔗 {primero['url']}")
-        esperar()
-        html, error = descargar_pagina_artista(session, primero)
-        if error:
-            print(f"❌ {error}")
-            return
-        canciones = extraer_canciones_artista(html, primero["url"])
-        print(f"🎵 Canciones encontradas: {len(canciones)}")
-        if canciones:
-            print(f"   Ejemplo: {canciones[0]['titulo']} [{canciones[0]['lcd'] or '-'}]")
-
-
-def mostrar_estado():
-    letra = pedir_letra()
-    ruta_json = os.path.join(carpeta_letra(letra), ARCHIVO_JSON)
-    if not os.path.exists(ruta_json):
-        print(f"No existe {ruta_json} todavía.")
-        return
-
-    with open(ruta_json, "r", encoding="utf-8") as f:
-        estado = json.load(f)
-
-    print(f"--- ESTADO v5.2 | LETRA {letra.upper()} ---")
-    print(f"📁 Carpeta: {carpeta_letra(letra)}")
-    print(json.dumps(estado.get("resumen", {}), ensure_ascii=False, indent=2))
+        print("⏸️  Detenido por el usuario antes de terminar. Podés volver a")
+        print("    correr el script: las canciones ya descargadas se saltean")
+        print("    automáticamente y continúa desde donde quedó.")
+    print(f"Versiones descargadas: {total_versiones_descargadas}")
+    print(f"Versiones omitidas (ya existían): {total_versiones_omitidas}")
+    if total_versiones_fallidas:
+        print(f"Versiones que siguieron fallando tras el reintento: {total_versiones_fallidas}")
+        print("   (volvé a correr el script para intentarlas de nuevo; las ya")
+        print("    descargadas se saltean automáticamente)")
