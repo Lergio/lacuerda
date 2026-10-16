@@ -1,6 +1,4 @@
-from pathlib import Path
-
-readme = r"""# Biblioteca LaCuerda
+# Biblioteca LaCuerda
 
 Herramienta escrita en Python para descargar y organizar localmente acordes, tablaturas y otras transcripciones de canciones publicadas en [acordes.lacuerda.net](https://acordes.lacuerda.net/).
 
