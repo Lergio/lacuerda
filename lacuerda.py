@@ -1,7 +1,7 @@
 """
 lacuerda.py
 --------------
-Lanzador del crawler + descargador de LaCuerda v5.2.
+Lanzador del crawler + descargador de LaCuerda v5.3.
 """
 
 import sys
@@ -9,7 +9,7 @@ import funciones as flc
 
 BANNER = r"""
 ╔══════════════════════════════════════════════════╗
-║              Biblioteca LaCuerda v5.2            ║
+║              Biblioteca LaCuerda v5.3            ║
 ║     Índices → Artistas → Canciones → TXT         ║
 ╚══════════════════════════════════════════════════╝
 """
@@ -18,7 +18,8 @@ OPCIONES = {
     "1": "Scrapear una letra y descargar",
     "2": "Verificar una letra + primer artista",
     "3": "Mostrar estado de una letra",
-    "4": "Salir",
+    "4": "Reintentar fallidas de una letra (índices, artistas, versiones)",
+    "5": "Salir",
 }
 
 
@@ -43,6 +44,8 @@ def main():
         elif eleccion == "3":
             flc.mostrar_estado()
         elif eleccion == "4":
+            flc.reintentar_fallidas()
+        elif eleccion == "5":
             print("¡Listo! Hasta la próxima.")
             sys.exit(0)
         else:
