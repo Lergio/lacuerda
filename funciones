@@ -1,7 +1,7 @@
 """
 funciones.py
 ------------------
-Crawler + descargador de LaCuerda v5.2.
+Crawler + descargador de LaCuerda v5.3.
 
 Flujo:
     indice alfabetico -> paginas indexXXX -> artistas -> canciones -> versiones
@@ -29,6 +29,11 @@ URL_TABS = f"{DOMINIO_BASE}/tabs"
 CARPETA_PRINCIPAL = "Biblioteca_LaCuerda"
 ARCHIVO_JSON = "artistas.json"
 ARCHIVO_TXT = "artistas.txt"
+# Registro de resultados de cada letra (índices, artistas y versiones).
+ARCHIVO_REGISTRO_JSON = "registro_resultados.json"
+ARCHIVO_REGISTRO_TXT = "registro_resultados.txt"
+VERSION_SCRIPT = "5.3"
+MOTIVO_SIN_TEXTO = "no se encontró el texto en la página"
 
 # Cada letra tiene su propia carpeta para poder actualizarla de forma independiente.
 # Ejemplo: Biblioteca_LaCuerda/a/artistas.json
@@ -191,7 +196,7 @@ def escribir_archivo_atomico(ruta_final, contenido):
 def nuevo_estado(letra):
     """Crea el estado independiente de una única letra."""
     return {
-        "version": "5.2",
+        "version": "5.3",
         "fuente": f"{URL_TABS}/{quote(letra)}/",
         "letra": letra,
         "inicio": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -229,7 +234,7 @@ def cargar_estado_letra(letra):
 def construir_txt_control(estado):
     r = estado["resumen"]
     lineas = [
-        "LaCuerda Downloader v5.2 - CONTROL",
+        "LaCuerda Downloader v5.3 - CONTROL",
         "=" * 70,
         f"Letra: {estado['letra'].upper()}",
         f"Fuente: {estado['fuente']}",
@@ -278,6 +283,205 @@ def guardar_control(estado):
     os.makedirs(carpeta, exist_ok=True)
     escribir_json_atomico(os.path.join(carpeta, ARCHIVO_JSON), estado)
     escribir_texto_atomico(os.path.join(carpeta, ARCHIVO_TXT), construir_txt_control(estado))
+
+
+# ---------------------------------------------------------------------------
+# Registro de resultados (versiones, artistas e índices)
+# ---------------------------------------------------------------------------
+# Cada letra tiene un registro propio. Sirve para reintentar solo lo que
+# falló, sin volver a recorrer todo:
+#   - indices_fallidos:  páginas indexN.html que no se pudieron leer
+#   - artistas_fallidos: páginas de artista que no se pudieron leer
+#   - fallidas:          versiones (acordes, tablatura, ...) que no se guardaron
+#   - descargadas:       versiones guardadas correctamente
+#
+# En memoria cada colección es {url: item}; en disco son listas.
+
+COLECCIONES_REGISTRO = (
+    "indices_fallidos",
+    "artistas_fallidos",
+    "fallidas",
+    "descargadas",
+)
+
+
+def _ahora():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def crear_item_version(artista, titulo, etiqueta, url, ruta, archivo):
+    return {
+        "artista": artista,
+        "titulo": titulo,
+        "etiqueta": etiqueta,
+        "url": url,
+        "ruta": ruta,
+        "archivo": archivo,
+    }
+
+
+def nuevo_registro(letra):
+    registro = {
+        "version": VERSION_SCRIPT,
+        "letra": letra,
+        "actualizado": None,
+    }
+    for coleccion in COLECCIONES_REGISTRO:
+        registro[coleccion] = {}
+    return registro
+
+
+def cargar_registro_letra(letra):
+    """Carga el registro de una letra, o None si no existe o no sirve."""
+    ruta = os.path.join(carpeta_letra(letra), ARCHIVO_REGISTRO_JSON)
+    if not os.path.exists(ruta):
+        return None
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        if datos.get("letra") != letra:
+            return None
+        registro = nuevo_registro(letra)
+        registro["version"] = datos.get("version", VERSION_SCRIPT)
+        registro["actualizado"] = datos.get("actualizado")
+        for coleccion in COLECCIONES_REGISTRO:
+            registro[coleccion] = {i["url"]: i for i in datos.get(coleccion, [])}
+        return registro
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def registrar_fallo_en(registro, coleccion, datos, motivo, intentos_previos=None):
+    """Registra (o actualiza) un fallo en la colección indicada, clave = url."""
+    previo = registro[coleccion].get(datos["url"], {})
+    if intentos_previos is None:
+        intentos_previos = previo.get("intentos", 0)
+    entrada = dict(datos)
+    entrada["motivo"] = motivo
+    entrada["intentos"] = intentos_previos + 1
+    entrada["ultimo_intento"] = _ahora()
+    registro[coleccion][datos["url"]] = entrada
+
+
+def resolver_fallo(registro, coleccion, url):
+    registro[coleccion].pop(url, None)
+
+
+def registrar_descarga(registro, item, origen="descarga"):
+    """Marca una versión como descargada (y la saca de fallidas si estaba)."""
+    resolver_fallo(registro, "fallidas", item["url"])
+    if origen == "existente" and item["url"] in registro["descargadas"]:
+        return  # ya estaba registrada: se conserva su fecha original
+    entrada = dict(item)
+    entrada["origen"] = origen
+    entrada["fecha"] = _ahora()
+    registro["descargadas"][item["url"]] = entrada
+
+
+def registrar_fallo(registro, item, motivo, intentos_previos=None):
+    """Marca una versión como fallida y acumula la cantidad de intentos."""
+    registro["descargadas"].pop(item["url"], None)
+    registrar_fallo_en(registro, "fallidas", item, motivo, intentos_previos)
+
+
+def contar_pendientes(registro):
+    return (
+        len(registro["indices_fallidos"])
+        + len(registro["artistas_fallidos"])
+        + len(registro["fallidas"])
+    )
+
+
+def _lineas_fallo(item, linea_titulo):
+    return [
+        "",
+        linea_titulo,
+        f"  URL:     {item['url']}",
+        f"  Motivo:  {item.get('motivo', '?')}",
+        f"  Intentos: {item.get('intentos', '?')}"
+        f" (último: {item.get('ultimo_intento', '-')})",
+    ]
+
+
+def construir_txt_registro(registro):
+    indices = sorted(registro["indices_fallidos"].values(), key=lambda i: i["offset"])
+    artistas = sorted(
+        registro["artistas_fallidos"].values(), key=lambda i: i["nombre"].lower()
+    )
+    fallidas = sorted(
+        registro["fallidas"].values(),
+        key=lambda i: (i["artista"].lower(), i["titulo"].lower()),
+    )
+    descargadas = list(registro["descargadas"].values())
+
+    lineas = [
+        f"LaCuerda Downloader v{VERSION_SCRIPT} - REGISTRO DE RESULTADOS",
+        "=" * 70,
+        f"Letra: {registro['letra'].upper()}",
+        f"Actualizado: {registro.get('actualizado') or '-'}",
+        "",
+        f"Páginas de índice fallidas: {len(indices)}",
+        f"Artistas fallidos:          {len(artistas)}",
+        f"Versiones fallidas:         {len(fallidas)}",
+        f"Versiones descargadas:      {len(descargadas)}",
+        "",
+        "ÍNDICES FALLIDOS (se reintentan desde el menú)",
+        "=" * 70,
+    ]
+    if not indices:
+        lineas.append("(ninguno)")
+    for item in indices:
+        lineas.extend(_lineas_fallo(item, f"Índice {item['offset']}"))
+
+    lineas.extend(["", "ARTISTAS FALLIDOS (se reintentan desde el menú)", "=" * 70])
+    if not artistas:
+        lineas.append("(ninguno)")
+    for item in artistas:
+        lineas.extend(_lineas_fallo(item, item["nombre"]))
+
+    lineas.extend(["", "VERSIONES FALLIDAS (se reintentan desde el menú)", "=" * 70])
+    if not fallidas:
+        lineas.append("(ninguna)")
+    for item in fallidas:
+        lineas.extend(
+            _lineas_fallo(item, f"{item['artista']} - {item['titulo']} [{item['etiqueta']}]")
+        )
+
+    lineas.extend(["", "VERSIONES DESCARGADAS", "=" * 70])
+    if not descargadas:
+        lineas.append("(ninguna)")
+    por_artista = {}
+    for item in descargadas:
+        por_artista.setdefault(item["artista"], []).append(item)
+    for artista in sorted(por_artista, key=str.lower):
+        items = por_artista[artista]
+        lineas.append(f"\n{artista} ({len(items)})")
+        for item in sorted(items, key=lambda i: (i["titulo"].lower(), i["etiqueta"])):
+            lineas.append(f"  - {item['titulo']} [{item['etiqueta']}]")
+
+    return "\n".join(lineas) + "\n"
+
+
+def guardar_registro(registro):
+    """Guarda el registro (.json y .txt) en la carpeta de la letra."""
+    carpeta = carpeta_letra(registro["letra"])
+    os.makedirs(carpeta, exist_ok=True)
+    registro["actualizado"] = _ahora()
+
+    datos = {
+        "version": VERSION_SCRIPT,
+        "letra": registro["letra"],
+        "actualizado": registro["actualizado"],
+        "resumen": {c: len(registro[c]) for c in COLECCIONES_REGISTRO},
+    }
+    for coleccion in COLECCIONES_REGISTRO:
+        datos[coleccion] = list(registro[coleccion].values())
+
+    escribir_json_atomico(os.path.join(carpeta, ARCHIVO_REGISTRO_JSON), datos)
+    escribir_texto_atomico(
+        os.path.join(carpeta, ARCHIVO_REGISTRO_TXT),
+        construir_txt_registro(registro),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -513,11 +717,37 @@ def guardar_version_si_corresponde(
     return True
 
 
+def calcular_versiones_cancion(cancion, ruta_artista_url):
+    """Versiones esperables de una canción. No hace peticiones de red."""
+    slug = normalizar_slug_cancion(cancion["href"])
+    versiones = parsear_versiones(cancion.get("lcd", ""), slug, ruta_artista_url)
+    base_nombre = nombre_seguro(cancion["titulo"])
+    conteo_tipos = Counter(tipo for tipo, _, _ in versiones)
+    contador_actual = {}
+    resultado = []
+
+    for tipo, url_version, _sufijo in versiones:
+        if conteo_tipos[tipo] > 1:
+            contador_actual[tipo] = contador_actual.get(tipo, 0) + 1
+            etiqueta = f"{tipo} {contador_actual[tipo]}"
+        else:
+            etiqueta = tipo
+        resultado.append({
+            "tipo": tipo,
+            "etiqueta": etiqueta,
+            "url": url_version,
+            "archivo": f"{base_nombre} - {etiqueta}.txt",
+        })
+
+    return resultado
+
+
 def descargar_canciones_artista(
     session,
     artista,
     ruta_carpeta,
     estado,
+    registro,
 ):
     nombre_artista = artista["nombre"]
     ruta_artista_url = ruta_artista_desde_url(artista["url"])
@@ -530,75 +760,71 @@ def descargar_canciones_artista(
         if SE_PIDIO_DETENER:
             break
 
-        slug = normalizar_slug_cancion(cancion["href"])
-        versiones = parsear_versiones(cancion.get("lcd", ""), slug, ruta_artista_url)
-        base_nombre = nombre_seguro(cancion["titulo"])
-        conteo_tipos = Counter(tipo for tipo, _, _ in versiones)
-        contador_actual = {}
+        versiones = calcular_versiones_cancion(cancion, ruta_artista_url)
 
         print(
             f"      [{i}/{len(canciones)}] {cancion['titulo']} "
             f"({len(versiones)} versión/es)"
         )
 
-        for tipo, url_version, sufijo in versiones:
-            if conteo_tipos[tipo] > 1:
-                contador_actual[tipo] = contador_actual.get(tipo, 0) + 1
-                etiqueta = f"{tipo} {contador_actual[tipo]}"
-            else:
-                etiqueta = tipo
+        for v in versiones:
+            item = crear_item_version(
+                nombre_artista,
+                cancion["titulo"],
+                v["etiqueta"],
+                v["url"],
+                os.path.join(ruta_carpeta, v["archivo"]),
+                v["archivo"],
+            )
 
-            nombre_archivo = f"{base_nombre} - {etiqueta}.txt"
-            ruta_final_txt = os.path.join(ruta_carpeta, nombre_archivo)
-
-            if os.path.exists(ruta_final_txt):
+            if os.path.exists(item["ruta"]):
                 estado["resumen"]["versiones_omitidas"] += 1
+                registrar_descarga(registro, item, origen="existente")
                 continue
 
-            print(f"         🔗 [{tipo}] {url_version}")
+            print(f"         🔗 [{v['tipo']}] {item['url']}")
             esperar()
 
             try:
-                respuesta = obtener(session, url_version)
+                respuesta = obtener(session, item["url"])
             except Exception as e:
+                motivo = mensaje_amigable_error(e)
+                registrar_fallo(registro, item, motivo)
                 if es_error_reintentable(e):
-                    pendientes.append({
-                        "artista": nombre_artista,
-                        "titulo": cancion["titulo"],
-                        "etiqueta": etiqueta,
-                        "url": url_version,
-                        "ruta": ruta_final_txt,
-                        "archivo": nombre_archivo,
-                    })
+                    pendientes.append(item)
                 else:
                     estado["resumen"]["versiones_fallidas"] += 1
                     estado["errores"].append({
                         "tipo": "cancion_conexion",
-                        "url": url_version,
-                        "mensaje": mensaje_amigable_error(e),
+                        "url": item["url"],
+                        "mensaje": motivo,
                     })
                 continue
 
             if respuesta.status_code == 200:
                 if guardar_version_si_corresponde(
                     respuesta,
-                    nombre_artista,
-                    cancion["titulo"],
-                    etiqueta,
-                    url_version,
-                    ruta_final_txt,
-                    nombre_archivo,
+                    item["artista"],
+                    item["titulo"],
+                    item["etiqueta"],
+                    item["url"],
+                    item["ruta"],
+                    item["archivo"],
                 ):
                     estado["resumen"]["versiones_descargadas"] += 1
+                    registrar_descarga(registro, item)
                 else:
                     estado["resumen"]["versiones_fallidas"] += 1
+                    registrar_fallo(registro, item, MOTIVO_SIN_TEXTO)
             else:
+                motivo = mensaje_amigable_codigo(respuesta.status_code)
                 estado["resumen"]["versiones_fallidas"] += 1
                 estado["errores"].append({
                     "tipo": "cancion_http",
-                    "url": url_version,
-                    "mensaje": mensaje_amigable_codigo(respuesta.status_code),
+                    "url": item["url"],
+                    "mensaje": motivo,
                 })
+                registrar_fallo(registro, item, motivo)
 
             if SE_PIDIO_DETENER:
                 break
@@ -612,12 +838,14 @@ def descargar_canciones_artista(
             try:
                 respuesta = obtener(session, item["url"], timeout=TIMEOUT_REINTENTO)
             except Exception as e:
+                motivo = mensaje_amigable_error(e)
                 estado["resumen"]["versiones_fallidas"] += 1
                 estado["errores"].append({
                     "tipo": "reintento",
                     "url": item["url"],
-                    "mensaje": mensaje_amigable_error(e),
+                    "mensaje": motivo,
                 })
+                registrar_fallo(registro, item, motivo)
                 continue
 
             if respuesta.status_code == 200 and guardar_version_si_corresponde(
@@ -630,8 +858,14 @@ def descargar_canciones_artista(
                 item["archivo"],
             ):
                 estado["resumen"]["versiones_descargadas"] += 1
+                registrar_descarga(registro, item)
             else:
                 estado["resumen"]["versiones_fallidas"] += 1
+                if respuesta.status_code == 200:
+                    motivo = MOTIVO_SIN_TEXTO
+                else:
+                    motivo = mensaje_amigable_codigo(respuesta.status_code)
+                registrar_fallo(registro, item, motivo)
 
 
 def contar_descargas_artista(nombre_artista):
@@ -663,6 +897,134 @@ def recalcular_resumen(estado):
     )
 
 
+def limpiar_errores_url(estado, url):
+    """Quita de estado['errores'] los errores viejos asociados a una URL."""
+    estado["errores"] = [e for e in estado["errores"] if e.get("url") != url]
+
+
+def recalcular_procesados(estado):
+    estado["resumen"]["artistas_procesados"] = sum(
+        1 for a in estado["artistas"] if "canciones" in a and not a.get("error")
+    )
+
+
+def procesar_pagina_indice(session, letra, offset, estado, registro, artistas_por_url):
+    """
+    Descarga y procesa una página de índice.
+    Devuelve (offsets_de_paginas, artistas_nuevos), o None si falló.
+    """
+    esperar()
+    html, error = obtener_indice(session, letra, offset)
+    url = url_indice(letra, offset)
+
+    if offset not in estado["paginas_indice"]:
+        estado["paginas_indice"].append(offset)
+        estado["paginas_indice"].sort()
+    estado["resumen"]["paginas_indice"] = len(estado["paginas_indice"])
+
+    limpiar_errores_url(estado, url)
+
+    if error:
+        estado["errores"].append(error)
+        registrar_fallo_en(
+            registro,
+            "indices_fallidos",
+            {"offset": offset, "url": url},
+            error["mensaje"],
+        )
+        guardar_control(estado)
+        guardar_registro(registro)
+        return None
+
+    resolver_fallo(registro, "indices_fallidos", url)
+
+    nuevos_offsets = extraer_paginas_indice(html, letra)
+    artistas = extraer_artistas_indice(html, letra)
+    print(f"      👥 Artistas encontrados en esta página: {len(artistas)}")
+
+    nuevos = []
+    for artista in artistas:
+        clave = artista["url"].rstrip("/")
+        if clave in artistas_por_url:
+            # Actualizamos datos básicos del índice, pero conservamos las
+            # canciones ya descubiertas durante una ejecución anterior.
+            existente = artistas_por_url[clave]
+            existente["nombre"] = artista["nombre"]
+            existente["letra_indice"] = artista["letra_indice"]
+            existente["canciones_declaradas"] = artista["canciones_declaradas"]
+        else:
+            artistas_por_url[clave] = artista
+            estado["artistas"].append(artista)
+            nuevos.append(artista)
+
+    recalcular_resumen(estado)
+    guardar_control(estado)
+    guardar_registro(registro)
+    return nuevos_offsets, nuevos
+
+
+def procesar_artista(session, artista, ruta_letra, estado, registro):
+    """
+    Descarga la página de un artista y todas sus canciones.
+    Devuelve True si la página del artista se pudo leer.
+    """
+    esperar()
+    html, error = descargar_pagina_artista(session, artista)
+    limpiar_errores_url(estado, artista["url"])
+
+    if error:
+        artista["error"] = error
+        estado["errores"].append({
+            "tipo": "artista",
+            "url": artista["url"],
+            "mensaje": error,
+        })
+        registrar_fallo_en(
+            registro,
+            "artistas_fallidos",
+            {
+                "nombre": artista["nombre"],
+                "url": artista["url"],
+                "canciones_declaradas": artista.get("canciones_declaradas"),
+            },
+            error,
+        )
+        guardar_control(estado)
+        guardar_registro(registro)
+        return False
+
+    artista.pop("error", None)
+    resolver_fallo(registro, "artistas_fallidos", artista["url"])
+    artista["canciones"] = extraer_canciones_artista(html, artista["url"])
+    artista["canciones_encontradas"] = len(artista["canciones"])
+
+    if (
+        artista.get("canciones_declaradas") is not None
+        and artista["canciones_declaradas"] != len(artista["canciones"])
+    ):
+        artista["advertencia_cantidad"] = (
+            f"La página declara {artista['canciones_declaradas']} "
+            f"y se encontraron {len(artista['canciones'])}."
+        )
+    else:
+        artista.pop("advertencia_cantidad", None)
+
+    ruta_artista = os.path.join(
+        ruta_letra,
+        nombre_seguro(artista["nombre"]).replace(" ", "_"),
+    )
+    artista["carpeta"] = ruta_artista
+
+    recalcular_procesados(estado)
+    recalcular_resumen(estado)
+    guardar_control(estado)
+
+    descargar_canciones_artista(session, artista, ruta_artista, estado, registro)
+    guardar_control(estado)
+    guardar_registro(registro)
+    return True
+
+
 def procesar_letra(letra=None):
     """Recorre exclusivamente una letra y guarda todo dentro de su carpeta."""
     global SE_PIDIO_DETENER
@@ -674,20 +1036,20 @@ def procesar_letra(letra=None):
     ruta_letra = carpeta_letra(letra)
     os.makedirs(ruta_letra, exist_ok=True)
 
-    print(f"--- LaCuerda Downloader v5.2 | LETRA {letra.upper()} ---")
+    print(f"--- LaCuerda Downloader v{VERSION_SCRIPT} | LETRA {letra.upper()} ---")
     print(f"📁 Carpeta de trabajo: {ruta_letra}")
     print("🔗 Se utilizará UNA sesión HTTP reutilizable para toda esta letra.")
     print(f"⏱️ Espera entre peticiones: {ESPERA_ENTRE_PETICIONES}s")
 
     estado = cargar_estado_letra(letra) or nuevo_estado(letra)
     estado["fin"] = None
+    registro = cargar_registro_letra(letra) or nuevo_registro(letra)
     session = crear_sesion()
 
     # El JSON existente permite continuar un recorrido interrumpido sin perder
     # los artistas ya descubiertos. Para una actualización futura de la letra,
     # se vuelve a consultar el índice y se agregan/corrigen artistas.
     artistas_por_url = {a["url"].rstrip("/"): a for a in estado.get("artistas", [])}
-    offsets_vistos = set(estado.get("paginas_indice", []))
     pagina_offsets = [0]
     paginas_procesadas_en_esta_ejecucion = set()
 
@@ -698,42 +1060,16 @@ def procesar_letra(letra=None):
             continue
         paginas_procesadas_en_esta_ejecucion.add(offset)
 
-        esperar()
-        html, error = obtener_indice(session, letra, offset)
-
-        if offset not in estado["paginas_indice"]:
-            estado["paginas_indice"].append(offset)
-            estado["paginas_indice"].sort()
-        estado["resumen"]["paginas_indice"] = len(estado["paginas_indice"])
-
-        if error:
-            estado["errores"].append(error)
-            guardar_control(estado)
+        resultado = procesar_pagina_indice(
+            session, letra, offset, estado, registro, artistas_por_url
+        )
+        if resultado is None:
             continue
 
-        nuevos_offsets = extraer_paginas_indice(html, letra)
+        nuevos_offsets, _nuevos = resultado
         for nuevo in nuevos_offsets:
             if nuevo not in paginas_procesadas_en_esta_ejecucion and nuevo not in pagina_offsets:
                 pagina_offsets.append(nuevo)
-
-        artistas = extraer_artistas_indice(html, letra)
-        print(f"      👥 Artistas encontrados en esta página: {len(artistas)}")
-
-        for artista in artistas:
-            clave = artista["url"].rstrip("/")
-            if clave in artistas_por_url:
-                # Actualizamos datos básicos del índice, pero conservamos las
-                # canciones ya descubiertas durante una ejecución anterior.
-                existente = artistas_por_url[clave]
-                existente["nombre"] = artista["nombre"]
-                existente["letra_indice"] = artista["letra_indice"]
-                existente["canciones_declaradas"] = artista["canciones_declaradas"]
-            else:
-                artistas_por_url[clave] = artista
-                estado["artistas"].append(artista)
-
-        recalcular_resumen(estado)
-        guardar_control(estado)
 
     print(f"\n👥 Total de artistas de {letra.upper()}: {len(estado['artistas'])}")
 
@@ -743,52 +1079,12 @@ def procesar_letra(letra=None):
             break
 
         print(f"\n[{numero}/{len(estado['artistas'])}] {artista['nombre']}")
-        esperar()
-        html, error = descargar_pagina_artista(session, artista)
+        procesar_artista(session, artista, ruta_letra, estado, registro)
 
-        if error:
-            artista["error"] = error
-            estado["errores"].append({
-                "tipo": "artista",
-                "url": artista["url"],
-                "mensaje": error,
-            })
-            guardar_control(estado)
-            continue
-
-        artista.pop("error", None)
-        artista["canciones"] = extraer_canciones_artista(html, artista["url"])
-        artista["canciones_encontradas"] = len(artista["canciones"])
-
-        if (
-            artista.get("canciones_declaradas") is not None
-            and artista["canciones_declaradas"] != len(artista["canciones"])
-        ):
-            artista["advertencia_cantidad"] = (
-                f"La página declara {artista['canciones_declaradas']} "
-                f"y se encontraron {len(artista['canciones'])}."
-            )
-        else:
-            artista.pop("advertencia_cantidad", None)
-
-        ruta_artista = os.path.join(
-            ruta_letra,
-            nombre_seguro(artista["nombre"]).replace(" ", "_"),
-        )
-        artista["carpeta"] = ruta_artista
-
-        estado["resumen"]["artistas_procesados"] = sum(
-            1 for a in estado["artistas"] if "canciones" in a and not a.get("error")
-        )
-        recalcular_resumen(estado)
-        guardar_control(estado)
-
-        descargar_canciones_artista(session, artista, ruta_artista, estado)
-        guardar_control(estado)
-
-    estado["fin"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    estado["fin"] = _ahora()
     recalcular_resumen(estado)
     guardar_control(estado)
+    guardar_registro(registro)
 
     print("\n========== RESUMEN ==========")
     for clave, valor in estado["resumen"].items():
@@ -802,6 +1098,288 @@ def procesar_letra(letra=None):
     print(f"📁 Carpeta: {ruta_letra}")
     print(f"📄 JSON: {os.path.join(ruta_letra, ARCHIVO_JSON)}")
     print(f"📄 TXT:  {os.path.join(ruta_letra, ARCHIVO_TXT)}")
+    print(f"📄 Registro: {os.path.join(ruta_letra, ARCHIVO_REGISTRO_JSON)}")
+    print(f"📄 Registro: {os.path.join(ruta_letra, ARCHIVO_REGISTRO_TXT)}")
+    print(
+        f"\n📊 Versiones descargadas: {len(registro['descargadas'])}"
+        f"\n❌ Fallidas -> índices: {len(registro['indices_fallidos'])} | "
+        f"artistas: {len(registro['artistas_fallidos'])} | "
+        f"versiones: {len(registro['fallidas'])}"
+    )
+    if contar_pendientes(registro):
+        print("🔁 Podés reintentar solo lo que falló desde el menú.")
+
+
+def reconstruir_registro(letra):
+    """
+    Arma el registro de una letra procesada con una versión anterior, sin red:
+    toma artistas.json (errores y artistas con error) y comprueba qué archivos
+    .txt existen en disco.
+    """
+    estado = cargar_estado_letra(letra)
+    registro = nuevo_registro(letra)
+    if not estado:
+        return registro
+
+    motivos_previos = {
+        e.get("url"): e.get("mensaje")
+        for e in estado.get("errores", [])
+        if e.get("url")
+    }
+
+    # Páginas de índice con error
+    for e in estado.get("errores", []):
+        if e.get("tipo") not in ("indice_conexion", "indice_http"):
+            continue
+        m = re.search(r"index(\d+)\.html", e.get("url", ""))
+        if m:
+            registrar_fallo_en(
+                registro,
+                "indices_fallidos",
+                {"offset": int(m.group(1)), "url": e["url"]},
+                e.get("mensaje", "error al leer el índice"),
+                intentos_previos=0,
+            )
+
+    for artista in estado.get("artistas", []):
+        # Páginas de artista con error
+        if artista.get("error"):
+            registrar_fallo_en(
+                registro,
+                "artistas_fallidos",
+                {
+                    "nombre": artista["nombre"],
+                    "url": artista["url"],
+                    "canciones_declaradas": artista.get("canciones_declaradas"),
+                },
+                artista["error"],
+                intentos_previos=0,
+            )
+
+        # Versiones: existe el archivo o falta
+        ruta_artista = artista.get("carpeta")
+        if not ruta_artista or not artista.get("canciones"):
+            continue
+        ruta_artista_url = ruta_artista_desde_url(artista["url"])
+
+        for cancion in artista["canciones"]:
+            for v in calcular_versiones_cancion(cancion, ruta_artista_url):
+                item = crear_item_version(
+                    artista["nombre"],
+                    cancion["titulo"],
+                    v["etiqueta"],
+                    v["url"],
+                    os.path.join(ruta_artista, v["archivo"]),
+                    v["archivo"],
+                )
+                if os.path.exists(item["ruta"]):
+                    registrar_descarga(registro, item, origen="existente")
+                else:
+                    motivo = motivos_previos.get(item["url"]) or (
+                        "archivo faltante (detectado al reconstruir desde artistas.json)"
+                    )
+                    registrar_fallo(registro, item, motivo, intentos_previos=0)
+
+    return registro
+
+
+def _reintentar_versiones(session, registro):
+    """Reintenta las versiones fallidas. Devuelve las URLs resueltas."""
+    fallidas = list(registro["fallidas"].values())
+    resueltas = []
+    if not fallidas:
+        return resueltas
+
+    print(f"\n========== VERSIONES FALLIDAS ({len(fallidas)}) ==========")
+
+    for numero, item in enumerate(fallidas, start=1):
+        if SE_PIDIO_DETENER:
+            break
+
+        print(
+            f"\n[{numero}/{len(fallidas)}] {item['artista']} - "
+            f"{item['titulo']} [{item['etiqueta']}]"
+        )
+
+        # Puede haberse descargado por otro camino desde la última corrida.
+        if os.path.exists(item["ruta"]):
+            print("         ✅ El archivo ya existe en disco.")
+            registrar_descarga(registro, item, origen="existente")
+            resueltas.append(item["url"])
+            continue
+
+        print(f"         🔗 {item['url']}")
+        esperar()
+
+        try:
+            respuesta = obtener(session, item["url"], timeout=TIMEOUT_REINTENTO)
+        except Exception as e:
+            motivo = mensaje_amigable_error(e)
+            print(f"         ❌ {motivo}")
+            registrar_fallo(registro, item, motivo)
+            continue
+
+        if respuesta.status_code != 200:
+            motivo = mensaje_amigable_codigo(respuesta.status_code)
+            print(f"         ❌ {motivo}")
+            registrar_fallo(registro, item, motivo)
+            continue
+
+        if guardar_version_si_corresponde(
+            respuesta,
+            item["artista"],
+            item["titulo"],
+            item["etiqueta"],
+            item["url"],
+            item["ruta"],
+            item["archivo"],
+        ):
+            registrar_descarga(registro, item, origen="reintento")
+            resueltas.append(item["url"])
+        else:
+            registrar_fallo(registro, item, MOTIVO_SIN_TEXTO)
+
+        if numero % 10 == 0:
+            guardar_registro(registro)
+
+    return resueltas
+
+
+def reintentar_fallidas(letra=None):
+    """
+    Reintenta SOLO lo que falló en una letra, en este orden:
+      1) páginas de índice  2) versiones sueltas  3) páginas de artista
+    No vuelve a recorrer lo que ya salió bien.
+    """
+    global SE_PIDIO_DETENER
+    SE_PIDIO_DETENER = False
+
+    if letra is None:
+        letra = pedir_letra()
+
+    ruta_letra = carpeta_letra(letra)
+    print(f"--- REINTENTAR FALLIDAS v{VERSION_SCRIPT} | LETRA {letra.upper()} ---")
+
+    estado = cargar_estado_letra(letra)
+    registro = cargar_registro_letra(letra)
+
+    if registro is None:
+        if estado is None:
+            print(f"No hay datos de la letra {letra.upper()} todavía. Primero usá la opción 1.")
+            return
+        print("ℹ️ Esta letra no tiene registro de resultados (se procesó con una versión anterior).")
+        print("   Reconstruyéndolo desde artistas.json y los archivos que hay en disco...")
+        registro = reconstruir_registro(letra)
+        guardar_registro(registro)
+
+    if estado is None:
+        estado = nuevo_estado(letra)
+
+    if contar_pendientes(registro) == 0:
+        print(f"✅ No hay nada fallido en la letra {letra.upper()}.")
+        return
+
+    print(
+        f"🔁 Pendientes -> índices: {len(registro['indices_fallidos'])} | "
+        f"versiones: {len(registro['fallidas'])} | "
+        f"artistas: {len(registro['artistas_fallidos'])}"
+    )
+    print(f"⏱️ Espera entre peticiones: {ESPERA_ENTRE_PETICIONES}s")
+
+    session = crear_sesion()
+    artistas_por_url = {a["url"].rstrip("/"): a for a in estado["artistas"]}
+    resumen = {"indices": 0, "versiones": 0, "artistas": 0}
+
+    # ---------------------------------------------------- 1) índices
+    nuevos_artistas = []
+    pendientes_offsets = sorted(i["offset"] for i in registro["indices_fallidos"].values())
+    if pendientes_offsets:
+        print(f"\n========== ÍNDICES FALLIDOS ({len(pendientes_offsets)}) ==========")
+    ya_probados = set()
+    while pendientes_offsets and not SE_PIDIO_DETENER:
+        offset = pendientes_offsets.pop(0)
+        if offset in ya_probados:
+            continue
+        ya_probados.add(offset)
+
+        resultado = procesar_pagina_indice(
+            session, letra, offset, estado, registro, artistas_por_url
+        )
+        if resultado is None:
+            continue
+
+        resumen["indices"] += 1
+        nuevos_offsets, nuevos = resultado
+        nuevos_artistas.extend(nuevos)
+        # Páginas que antes no se habían descubierto por este índice caído
+        for nuevo in nuevos_offsets:
+            if (
+                nuevo not in estado["paginas_indice"]
+                and nuevo not in ya_probados
+                and nuevo not in pendientes_offsets
+            ):
+                pendientes_offsets.append(nuevo)
+
+    # --------------------------------------------------- 2) versiones
+    resueltas = _reintentar_versiones(session, registro)
+    resumen["versiones"] = len(resueltas)
+    if resueltas:
+        resueltas_set = set(resueltas)
+        r = estado["resumen"]
+        r["versiones_descargadas"] += len(resueltas)
+        r["versiones_fallidas"] = max(0, r["versiones_fallidas"] - len(resueltas))
+        estado["errores"] = [
+            e for e in estado["errores"] if e.get("url") not in resueltas_set
+        ]
+    guardar_control(estado)
+    guardar_registro(registro)
+
+    # ---------------------------------------------------- 3) artistas
+    artistas_a_procesar = []
+    for item in list(registro["artistas_fallidos"].values()):
+        artista = artistas_por_url.get(item["url"].rstrip("/"))
+        if artista is None:
+            artista = {
+                "nombre": item["nombre"],
+                "url": item["url"],
+                "letra_indice": letra,
+                "canciones_declaradas": item.get("canciones_declaradas"),
+            }
+            estado["artistas"].append(artista)
+            artistas_por_url[item["url"].rstrip("/")] = artista
+        artistas_a_procesar.append(artista)
+    for artista in nuevos_artistas:
+        if not any(artista is a for a in artistas_a_procesar):
+            artistas_a_procesar.append(artista)
+
+    if artistas_a_procesar:
+        print(f"\n========== ARTISTAS ({len(artistas_a_procesar)}) ==========")
+    for numero, artista in enumerate(artistas_a_procesar, start=1):
+        if SE_PIDIO_DETENER:
+            break
+        print(f"\n[{numero}/{len(artistas_a_procesar)}] {artista['nombre']}")
+        if procesar_artista(session, artista, ruta_letra, estado, registro):
+            resumen["artistas"] += 1
+
+    recalcular_procesados(estado)
+    recalcular_resumen(estado)
+    guardar_control(estado)
+    guardar_registro(registro)
+
+    print("\n========== RESULTADO ==========")
+    print(
+        f"Resueltos en esta pasada -> índices: {resumen['indices']} | "
+        f"versiones: {resumen['versiones']} | artistas: {resumen['artistas']}"
+    )
+    print(
+        f"Siguen fallando          -> índices: {len(registro['indices_fallidos'])} | "
+        f"versiones: {len(registro['fallidas'])} | "
+        f"artistas: {len(registro['artistas_fallidos'])}"
+    )
+    print(f"Versiones descargadas en total: {len(registro['descargadas'])}")
+    if SE_PIDIO_DETENER:
+        print("\n⏸️ Reintento detenido. Lo pendiente sigue en el registro.")
+    print(f"📄 Registro: {os.path.join(ruta_letra, ARCHIVO_REGISTRO_TXT)}")
 
 
 def procesar_biblioteca_completa():
@@ -813,7 +1391,7 @@ def verificar_indice_a():
     """Verifica una letra seleccionada: índice y primer artista."""
     letra = pedir_letra()
     session = crear_sesion()
-    print(f"--- VERIFICACIÓN v5.2 | LETRA {letra.upper()} ---")
+    print(f"--- VERIFICACIÓN v5.3 | LETRA {letra.upper()} ---")
 
     url = url_indice(letra, 0)
     print(f"🔎 {url}")
@@ -859,6 +1437,18 @@ def mostrar_estado():
     with open(ruta_json, "r", encoding="utf-8") as f:
         estado = json.load(f)
 
-    print(f"--- ESTADO v5.2 | LETRA {letra.upper()} ---")
+    print(f"--- ESTADO v5.3 | LETRA {letra.upper()} ---")
     print(f"📁 Carpeta: {carpeta_letra(letra)}")
     print(json.dumps(estado.get("resumen", {}), ensure_ascii=False, indent=2))
+
+    registro = cargar_registro_letra(letra)
+    if registro:
+        print(
+            f"\n📊 Registro: {len(registro['descargadas'])} versiones descargadas | "
+            f"fallidas -> índices: {len(registro['indices_fallidos'])}, "
+            f"artistas: {len(registro['artistas_fallidos'])}, "
+            f"versiones: {len(registro['fallidas'])}"
+        )
+        print(f"📄 Detalle en: {os.path.join(carpeta_letra(letra), ARCHIVO_REGISTRO_TXT)}")
+    else:
+        print("\nℹ️ Esta letra todavía no tiene registro de resultados.")
