@@ -248,7 +248,7 @@ def construir_txt_control(estado):
         f"Artistas procesados:     {r['artistas_procesados']}",
         f"Canciones encontradas:   {r['canciones_encontradas']}",
         f"Versiones descargadas:   {r['versiones_descargadas']}",
-        f"Versiones omitidas:      {r['versiones_omitidas']}",
+        f"Versiones omitidas (última corrida): {r['versiones_omitidas']}",
         f"Versiones fallidas:      {r['versiones_fallidas']}",
         "",
         "ARTISTAS",
@@ -277,8 +277,19 @@ def construir_txt_control(estado):
     return "\n".join(lineas) + "\n"
 
 
-def guardar_control(estado):
+def sincronizar_resumen_versiones(estado, registro):
+    """
+    Los contadores de versiones se calculan desde el registro, que refleja el
+    estado ACTUAL de cada versión. Así no se acumulan entre corridas.
+    """
+    estado["resumen"]["versiones_descargadas"] = len(registro["descargadas"])
+    estado["resumen"]["versiones_fallidas"] = len(registro["fallidas"])
+
+
+def guardar_control(estado, registro=None):
     """Guarda JSON y TXT dentro de la carpeta exclusiva de la letra."""
+    if registro is not None:
+        sincronizar_resumen_versiones(estado, registro)
     carpeta = carpeta_letra(estado["letra"])
     os.makedirs(carpeta, exist_ok=True)
     escribir_json_atomico(os.path.join(carpeta, ARCHIVO_JSON), estado)
@@ -793,7 +804,6 @@ def descargar_canciones_artista(
                 if es_error_reintentable(e):
                     pendientes.append(item)
                 else:
-                    estado["resumen"]["versiones_fallidas"] += 1
                     estado["errores"].append({
                         "tipo": "cancion_conexion",
                         "url": item["url"],
@@ -811,14 +821,11 @@ def descargar_canciones_artista(
                     item["ruta"],
                     item["archivo"],
                 ):
-                    estado["resumen"]["versiones_descargadas"] += 1
                     registrar_descarga(registro, item)
                 else:
-                    estado["resumen"]["versiones_fallidas"] += 1
                     registrar_fallo(registro, item, MOTIVO_SIN_TEXTO)
             else:
                 motivo = mensaje_amigable_codigo(respuesta.status_code)
-                estado["resumen"]["versiones_fallidas"] += 1
                 estado["errores"].append({
                     "tipo": "cancion_http",
                     "url": item["url"],
@@ -839,7 +846,6 @@ def descargar_canciones_artista(
                 respuesta = obtener(session, item["url"], timeout=TIMEOUT_REINTENTO)
             except Exception as e:
                 motivo = mensaje_amigable_error(e)
-                estado["resumen"]["versiones_fallidas"] += 1
                 estado["errores"].append({
                     "tipo": "reintento",
                     "url": item["url"],
@@ -857,10 +863,8 @@ def descargar_canciones_artista(
                 item["ruta"],
                 item["archivo"],
             ):
-                estado["resumen"]["versiones_descargadas"] += 1
                 registrar_descarga(registro, item)
             else:
-                estado["resumen"]["versiones_fallidas"] += 1
                 if respuesta.status_code == 200:
                     motivo = MOTIVO_SIN_TEXTO
                 else:
@@ -932,7 +936,7 @@ def procesar_pagina_indice(session, letra, offset, estado, registro, artistas_po
             {"offset": offset, "url": url},
             error["mensaje"],
         )
-        guardar_control(estado)
+        guardar_control(estado, registro)
         guardar_registro(registro)
         return None
 
@@ -958,7 +962,7 @@ def procesar_pagina_indice(session, letra, offset, estado, registro, artistas_po
             nuevos.append(artista)
 
     recalcular_resumen(estado)
-    guardar_control(estado)
+    guardar_control(estado, registro)
     guardar_registro(registro)
     return nuevos_offsets, nuevos
 
@@ -989,7 +993,7 @@ def procesar_artista(session, artista, ruta_letra, estado, registro):
             },
             error,
         )
-        guardar_control(estado)
+        guardar_control(estado, registro)
         guardar_registro(registro)
         return False
 
@@ -1017,10 +1021,10 @@ def procesar_artista(session, artista, ruta_letra, estado, registro):
 
     recalcular_procesados(estado)
     recalcular_resumen(estado)
-    guardar_control(estado)
+    guardar_control(estado, registro)
 
     descargar_canciones_artista(session, artista, ruta_artista, estado, registro)
-    guardar_control(estado)
+    guardar_control(estado, registro)
     guardar_registro(registro)
     return True
 
@@ -1043,6 +1047,7 @@ def procesar_letra(letra=None):
 
     estado = cargar_estado_letra(letra) or nuevo_estado(letra)
     estado["fin"] = None
+    estado["resumen"]["versiones_omitidas"] = 0
     registro = cargar_registro_letra(letra) or nuevo_registro(letra)
     session = crear_sesion()
 
@@ -1083,7 +1088,7 @@ def procesar_letra(letra=None):
 
     estado["fin"] = _ahora()
     recalcular_resumen(estado)
-    guardar_control(estado)
+    guardar_control(estado, registro)
     guardar_registro(registro)
 
     print("\n========== RESUMEN ==========")
@@ -1274,6 +1279,7 @@ def reintentar_fallidas(letra=None):
 
     if estado is None:
         estado = nuevo_estado(letra)
+    estado["resumen"]["versiones_omitidas"] = 0
 
     if contar_pendientes(registro) == 0:
         print(f"✅ No hay nada fallido en la letra {letra.upper()}.")
@@ -1325,13 +1331,10 @@ def reintentar_fallidas(letra=None):
     resumen["versiones"] = len(resueltas)
     if resueltas:
         resueltas_set = set(resueltas)
-        r = estado["resumen"]
-        r["versiones_descargadas"] += len(resueltas)
-        r["versiones_fallidas"] = max(0, r["versiones_fallidas"] - len(resueltas))
         estado["errores"] = [
             e for e in estado["errores"] if e.get("url") not in resueltas_set
         ]
-    guardar_control(estado)
+    guardar_control(estado, registro)
     guardar_registro(registro)
 
     # ---------------------------------------------------- 3) artistas
@@ -1363,7 +1366,7 @@ def reintentar_fallidas(letra=None):
 
     recalcular_procesados(estado)
     recalcular_resumen(estado)
-    guardar_control(estado)
+    guardar_control(estado, registro)
     guardar_registro(registro)
 
     print("\n========== RESULTADO ==========")
