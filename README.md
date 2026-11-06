@@ -146,9 +146,9 @@ inesperado no deja archivos a medio escribir.
 | `artistas_encontrados` | Artistas detectados en el índice |
 | `artistas_procesados` | Artistas cuya página se descargó sin error |
 | `canciones_encontradas` | Canciones listadas en las páginas de artistas |
-| `versiones_descargadas` | Archivos `.txt` nuevos guardados |
-| `versiones_omitidas` | Archivos que ya existían |
-| `versiones_fallidas` | Versiones que no se pudieron guardar |
+| `versiones_descargadas` | Versiones guardadas en total (incluye las que ya existían). Se calcula desde el registro |
+| `versiones_omitidas` | Archivos que ya existían y se saltaron **en la última corrida** (se reinicia en cada corrida) |
+| `versiones_fallidas` | Versiones que fallan **actualmente**. Se calcula desde el registro, baja cuando se resuelven |
 
 ---
 
